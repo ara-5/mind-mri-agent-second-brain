@@ -136,7 +136,7 @@
       position: relative;
     }
 
-    input[type="text"], input[type="password"] {
+    input[type="text"], input[type="password"], textarea, select {
       width: 100%;
       background: rgba(255, 255, 255, 0.04);
       border: 1px solid rgba(255, 255, 255, 0.1);
@@ -148,7 +148,7 @@
       transition: all 0.2s ease;
     }
 
-    input:focus {
+    input:focus, textarea:focus, select:focus {
       outline: none;
       border-color: var(--color-core);
       background: rgba(255, 255, 255, 0.07);
@@ -681,6 +681,33 @@
         </button>
       </div>
 
+      <!-- Agent Simulator -->
+      <div class="panel-section">
+        <h3>Agent Simulator</h3>
+        <div style="display:flex; flex-direction:column; gap:0.5rem; background:rgba(255,255,255,0.02); padding:0.75rem; border-radius:8px; border:1px solid rgba(255,255,255,0.05);">
+          <div class="input-wrapper">
+            <input type="text" id="sim-title" placeholder="Memory Title...">
+          </div>
+          <div class="input-wrapper">
+            <select id="sim-type" style="width:100%; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.1); padding:0.65rem 0.85rem; border-radius:8px; color:var(--text-main); font-family:inherit; font-size:0.9rem;">
+              <option value="memory" style="background:var(--bg-dark);">Memory</option>
+              <option value="research" style="background:var(--bg-dark);">Research</option>
+              <option value="decision" style="background:var(--bg-dark);">Decision</option>
+              <option value="task" style="background:var(--bg-dark);">Task</option>
+              <option value="insight" style="background:var(--bg-dark);">Insight</option>
+              <option value="note" style="background:var(--bg-dark);">Note</option>
+            </select>
+          </div>
+          <div class="input-wrapper">
+            <input type="text" id="sim-tags" placeholder="tags (comma-separated)...">
+          </div>
+          <div class="input-wrapper">
+            <textarea id="sim-content" placeholder="Content... (use [[WikiLinks]])" rows="3" style="width:100%; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.1); padding:0.65rem 0.85rem; border-radius:8px; color:var(--text-main); font-family:inherit; font-size:0.9rem; resize:vertical;"></textarea>
+          </div>
+          <button id="btn-sim-commit" class="btn" style="width:100%;">🧠 Commit Memory</button>
+        </div>
+      </div>
+
       <!-- Vault Statistics -->
       <div class="panel-section">
         <h3>Statistics</h3>
@@ -822,7 +849,8 @@
         eventSource.close();
       }
 
-      eventSource = new EventSource(`${API_URL}/stream`);
+      const tokenParam = API_KEY ? `?token=${encodeURIComponent(API_KEY)}` : '';
+      eventSource = new EventSource(`${API_URL}/stream${tokenParam}`);
 
       eventSource.addEventListener('ping', () => {
         console.log('[sse] Telemetry stream connected.');
@@ -1391,6 +1419,65 @@
     }
 
     document.getElementById('search-input').addEventListener('input', applyFiltersAndRender);
+
+    // Agent simulator commit logic
+    document.getElementById('btn-sim-commit').addEventListener('click', async () => {
+      const title = document.getElementById('sim-title').value.trim();
+      const type = document.getElementById('sim-type').value;
+      const tagsStr = document.getElementById('sim-tags').value.trim();
+      const content = document.getElementById('sim-content').value.trim();
+
+      if (!title || !content) {
+        alert('Please provide both a Title and Content for the memory.');
+        return;
+      }
+
+      const tags = tagsStr ? tagsStr.split(',').map(t => t.trim().replace(/^#/, '')).filter(Boolean) : [];
+
+      try {
+        const btn = document.getElementById('btn-sim-commit');
+        btn.textContent = 'Committing...';
+        btn.disabled = true;
+
+        const res = await fetch(`${API_URL}/remember`, {
+          method: 'POST',
+          headers: getHeaders(),
+          body: JSON.stringify({
+            title,
+            type,
+            tags,
+            content,
+            agent: 'web-dashboard-simulator'
+          })
+        });
+
+        const data = await res.json();
+        if (res.ok) {
+          // Reset simulator inputs
+          document.getElementById('sim-title').value = '';
+          document.getElementById('sim-tags').value = '';
+          document.getElementById('sim-content').value = '';
+          
+          // Refresh graph
+          await fetchGraph();
+          
+          // Flash nodes to visually indicate success
+          setTimeout(() => {
+            pulseNodes([data.id], 'var(--color-memory)');
+            navigateToNode(data.id);
+          }, 300);
+        } else {
+          const errorMsg = data.details ? `${data.error}:\n- ${data.details.join('\n- ')}` : (data.error || 'Failed to commit memory.');
+          alert(errorMsg);
+        }
+      } catch (e) {
+        alert('Error communicating with Second Brain API: ' + e.message);
+      } finally {
+        const btn = document.getElementById('btn-sim-commit');
+        btn.textContent = '🧠 Commit Memory';
+        btn.disabled = false;
+      }
+    });
 
     document.getElementById('btn-zoom-in').addEventListener('click', () => {
       svg.transition().duration(300).call(zoom.scaleBy, 1.3);

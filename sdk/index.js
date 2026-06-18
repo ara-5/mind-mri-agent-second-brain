@@ -207,9 +207,11 @@ export class SecondBrain {
   }
 
   /**
-   * Update an existing node.
+   * Update an existing node. Supports Optimistic Concurrency Control (OCC)
+   * by passing a `version` property in the patch payload.
+   *
    * @param {string} id    — node ID
-   * @param {object} patch — { title?, content?, type?, tags? }
+   * @param {object} patch — { title?, content?, type?, tags?, version? }
    */
   async update(id, patch) {
     return await this._fetch(`/node/${encodeURIComponent(id)}`, {

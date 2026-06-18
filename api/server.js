@@ -36,7 +36,7 @@ import { exec } from 'child_process';
 import {
   loadVault, writeNode, updateNodeFile, deleteNodeFile,
   buildEdges, buildBacklinks, searchNodes, buildContext,
-  parseWikiLinks, parseTags,
+  parseWikiLinks, parseTags, validateNode,
 } from './brain_engine.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -180,8 +180,52 @@ const server = http.createServer(async (req, res) => {
 
   if (method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
 
+  const isStaticUi = p === '/' || p === '/ui' || p.startsWith('/ui/') || p === '/d3.min.js' || p === '/marked.min.js';
+  const isExempt = p === '/health' || p === '/stream' || isStaticUi;
+
+  if (!isExempt) {
+    if (!authenticate(req, res)) return;
+  }
+
+  // ── Static Visualizer UI serving ─────────────────────────────────────────
+  if (method === 'GET' && isStaticUi) {
+    let filePath = '';
+    if (p === '/' || p === '/ui') {
+      filePath = path.join(__dirname, '..', 'ui', 'index.html');
+    } else if (p === '/d3.min.js' || p === '/marked.min.js') {
+      filePath = path.join(__dirname, '..', 'ui', p.slice(1));
+    } else {
+      const rel = p.replace(/^\/ui\//, '');
+      filePath = path.join(__dirname, '..', 'ui', rel);
+    }
+
+    if (fs.existsSync(filePath)) {
+      const ext = path.extname(filePath).toLowerCase();
+      let contentType = 'text/html';
+      if (ext === '.js') contentType = 'application/javascript';
+      else if (ext === '.css') contentType = 'text/css';
+      else if (ext === '.json') contentType = 'application/json';
+
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Access-Control-Allow-Origin': '*',
+      });
+      fs.createReadStream(filePath).pipe(res);
+      return;
+    }
+  }
+
   // ── Stream (SSE) ───────────────────────────────────────────────────────
   if (method === 'GET' && p === '/stream') {
+    // Authenticate SSE connections via query token parameter if AUTH_KEY is configured
+    if (AUTH_KEY) {
+      const token = url.searchParams.get('token') || '';
+      if (token !== AUTH_KEY) {
+        res.writeHead(401, CORS);
+        res.end(JSON.stringify({ error: 'Unauthorized: Invalid token in query string' }));
+        return;
+      }
+    }
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -205,7 +249,7 @@ const server = http.createServer(async (req, res) => {
       service:      '🧠 Second Brain API',
       version:      '1.0.0',
       port:         PORT,
-      vault:        VAULT_DIR,
+      vault:        './vault', // Relative path to hide absolute local filesystem directories
       nodeCount:    Object.keys(nodes).length,
       edgeCount:    edges.length,
       lastReload,
@@ -234,14 +278,12 @@ const server = http.createServer(async (req, res) => {
 
   // ── Reload ─────────────────────────────────────────────────────────────
   if (method === 'POST' && p === '/reload') {
-    if (!authenticate(req, res)) return;
     reload();
     return json(res, { success: true, nodeCount: Object.keys(nodes).length, lastReload });
   }
 
   // ── Consolidate (POST) ──────────────────────────────────────────────────
   if (method === 'POST' && p === '/consolidate') {
-    if (!authenticate(req, res)) return;
     const body = await readBody(req);
     const geminiKey = process.env.GEMINI_API_KEY || body.geminiApiKey || '';
     if (!geminiKey) {
@@ -472,10 +514,13 @@ ${memoryText}`;
 
   // ── Remember (POST) ────────────────────────────────────────────────────
   if (method === 'POST' && p === '/remember') {
-    if (!authenticate(req, res)) return;
     const body = await readBody(req);
-    if (!body.title)   return json(res, { error: '"title" is required' },   400);
-    if (!body.content) return json(res, { error: '"content" is required' }, 400);
+
+    // Schema Validation
+    const validation = validateNode(body, false);
+    if (!validation.valid) {
+      return json(res, { error: 'Validation Error', details: validation.errors }, 400);
+    }
 
     const node = {
       title:     body.title,
@@ -506,12 +551,31 @@ ${memoryText}`;
   // ── Update (PATCH) ────────────────────────────────────────────────────
   const patchMatch = p.match(/^\/node\/(.+)$/);
   if (method === 'PATCH' && patchMatch) {
-    if (!authenticate(req, res)) return;
     const id   = decodeURIComponent(patchMatch[1]);
     const node = nodes[id];
     if (!node) return json(res, { error: 'Node not found', id }, 404);
 
     const body = await readBody(req);
+
+    // Optimistic Concurrency Control (OCC) Check
+    if (body.version !== undefined) {
+      const clientVersion = parseInt(body.version, 10);
+      const serverVersion = parseInt(node.version, 10) || 1;
+      if (clientVersion !== serverVersion) {
+        return json(res, { 
+          error: 'Conflict: Node has been modified by another process. Please reload and retry.',
+          clientVersion,
+          serverVersion
+        }, 409);
+      }
+    }
+
+    // Schema Validation
+    const validation = validateNode(body, true);
+    if (!validation.valid) {
+      return json(res, { error: 'Validation Error', details: validation.errors }, 400);
+    }
+
     const ok   = updateNodeFile(node.filePath, {
       title:   body.title   || node.title,
       content: body.content !== undefined ? body.content : node.content,
@@ -539,7 +603,6 @@ ${memoryText}`;
   // ── Delete ────────────────────────────────────────────────────────────
   const deleteMatch = p.match(/^\/node\/(.+)$/);
   if (method === 'DELETE' && deleteMatch) {
-    if (!authenticate(req, res)) return;
     const id   = decodeURIComponent(deleteMatch[1]);
     const node = nodes[id];
     if (!node) return json(res, { error: 'Node not found', id }, 404);

@@ -20,14 +20,21 @@ function parseFrontmatter(content) {
   if (!match) return { meta: {}, body: content };
 
   const meta = {};
-  for (const line of match[1].split('\n')) {
+  for (let line of match[1].split('\n')) {
+    line = line.trim();
+    if (!line || line.startsWith('#')) continue;
     const colonIdx = line.indexOf(':');
     if (colonIdx === -1) continue;
-    const key = line.slice(0, colonIdx).trim();
-    let   val = line.slice(colonIdx + 1).trim();
+    let key = line.slice(0, colonIdx).trim().replace(/^['"]|['"]$/g, '');
+    let val = line.slice(colonIdx + 1).trim().replace(/^['"]|['"]$/g, '');
     // Parse arrays: [a, b, c]
     if (val.startsWith('[') && val.endsWith(']')) {
       val = val.slice(1, -1).split(',').map(s => s.trim().replace(/^['"]|['"]$/g, ''));
+    } else {
+      const num = Number(val);
+      if (val !== '' && !isNaN(num) && Number.isInteger(num)) {
+        val = num;
+      }
     }
     meta[key] = val;
   }
@@ -103,6 +110,7 @@ export function loadVault() {
           createdAt: meta.createdAt || null,
           importance: parseInt(meta.importance, 10) || 5,
           lastAccessedAt: meta.lastAccessedAt || meta.createdAt || new Date().toISOString().split('T')[0],
+          version:   parseInt(meta.version, 10) || 1,
           content:   body.trim(),
           filePath:  fullPath,
           relPath,
@@ -114,6 +122,7 @@ export function loadVault() {
   }
 
   walk(VAULT_DIR);
+  precomputeSearchIndex(nodes);
   return nodes;
 }
 
@@ -135,6 +144,7 @@ export function writeNode(node, subdir = '') {
     createdAt: node.createdAt || new Date().toISOString().split('T')[0],
     importance: node.importance || 5,
     lastAccessedAt: node.lastAccessedAt || node.createdAt || new Date().toISOString().split('T')[0],
+    version:   node.version   || 1,
   };
 
   const content = buildFrontmatter(meta) + `# ${node.title}\n\n${node.content || ''}`;
@@ -151,9 +161,23 @@ export function updateNodeFile(filePath, patch) {
   const raw            = fs.readFileSync(filePath, 'utf8');
   const { meta, body } = parseFrontmatter(raw);
 
+  const currentVersion = parseInt(meta.version, 10) || 1;
   const newMeta    = { ...meta, ...(patch.meta || {}) };
   const newContent = patch.content !== undefined ? patch.content : body;
   const newTitle   = patch.title   || path.basename(filePath, '.md');
+
+  // Determine if it was an actual user write/edit (content, title, or core meta changes)
+  const isActualEdit = (patch.title && patch.title !== path.basename(filePath, '.md')) ||
+                       (patch.content !== undefined && patch.content !== body) ||
+                       (patch.meta && (
+                         (patch.meta.type && patch.meta.type !== meta.type) ||
+                         (patch.meta.tags && JSON.stringify(patch.meta.tags) !== JSON.stringify(meta.tags)) ||
+                         (patch.meta.importance && parseInt(patch.meta.importance, 10) !== parseInt(meta.importance, 10))
+                       ));
+
+  if (isActualEdit) {
+    newMeta.version = currentVersion + 1;
+  }
 
   fs.writeFileSync(filePath, buildFrontmatter(newMeta) + `# ${newTitle}\n\n${newContent}`, 'utf8');
   return true;
@@ -220,27 +244,54 @@ function getDecayFactor(node) {
   return Math.exp(-lambda * diffDays);
 }
 
-export function searchNodes(nodes, query, limit = 10) {
-  // Filter out archived nodes from standard search
+// ── TF-IDF Caching Search Engine & Optimizations ──────────────────────────────
+let searchIndex = {
+  docTokens: [], // Array of { id, tokens, magnitude, docTf }
+  df: {},
+  N: 0
+};
+
+export function precomputeSearchIndex(nodes) {
   const allNodes = Object.values(nodes).filter(n => n.type !== 'archive');
-  if (!allNodes.length) return [];
-
-  const queryTokens = tokenize(query);
-  if (!queryTokens.length) return [];
-
+  const N = allNodes.length;
   const df = {};
+
   const docTokens = allNodes.map(node => {
-    // Boost title and tags by repeating them in search corpus
     const text = `${node.title} ${node.title} ${node.tags.join(' ')} ${node.tags.join(' ')} ${node.content}`;
     const tokens = tokenize(text);
     const uniqueTokens = new Set(tokens);
     for (const t of uniqueTokens) {
       df[t] = (df[t] || 0) + 1;
     }
-    return { id: node.id, tokens };
+
+    const docTf = {};
+    for (const t of tokens) {
+      docTf[t] = (docTf[t] || 0) + 1;
+    }
+
+    return { id: node.id, tokens, docTf };
   });
 
-  const N = allNodes.length;
+  docTokens.forEach(doc => {
+    let docMagnitudeSq = 0;
+    for (const t of Object.keys(doc.docTf)) {
+      const idf = Math.log(1 + N / (df[t] || 1));
+      const tfidf = doc.docTf[t] * idf;
+      docMagnitudeSq += tfidf * tfidf;
+    }
+    doc.magnitude = Math.sqrt(docMagnitudeSq);
+  });
+
+  searchIndex = { docTokens, df, N };
+}
+
+export function searchNodes(nodes, query, limit = 10) {
+  const queryTokens = tokenize(query);
+  if (!queryTokens.length) return [];
+
+  const { docTokens, df, N } = searchIndex;
+  if (N === 0) return [];
+
   const queryTf = {};
   for (const t of queryTokens) queryTf[t] = (queryTf[t] || 0) + 1;
 
@@ -256,24 +307,22 @@ export function searchNodes(nodes, query, limit = 10) {
   if (queryMagnitude === 0) return [];
 
   const results = [];
-  allNodes.forEach((node, index) => {
-    const tokens = docTokens[index].tokens;
-    const docTf = {};
-    for (const t of tokens) docTf[t] = (docTf[t] || 0) + 1;
+  docTokens.forEach(doc => {
+    const node = nodes[doc.id];
+    if (!node) return;
 
     let dotProduct = 0;
-    let docMagnitudeSq = 0;
-    for (const t of Object.keys(docTf)) {
-      const idf = Math.log(1 + N / (df[t] || 1));
-      const tfidf = docTf[t] * idf;
-      docMagnitudeSq += tfidf * tfidf;
-      if (queryVector[t]) dotProduct += queryVector[t] * tfidf;
+    for (const t of Object.keys(doc.docTf)) {
+      if (queryVector[t]) {
+        const idf = Math.log(1 + N / (df[t] || 1));
+        const tfidf = doc.docTf[t] * idf;
+        dotProduct += queryVector[t] * tfidf;
+      }
     }
 
-    const docMagnitude = Math.sqrt(docMagnitudeSq);
     let cosineSim = 0;
-    if (queryMagnitude > 0 && docMagnitude > 0) {
-      cosineSim = dotProduct / (queryMagnitude * docMagnitude);
+    if (queryMagnitude > 0 && doc.magnitude > 0) {
+      cosineSim = dotProduct / (queryMagnitude * doc.magnitude);
     }
 
     // Boost exact matches in title
@@ -297,6 +346,56 @@ export function searchNodes(nodes, query, limit = 10) {
   });
 
   return results.sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
+// ── Node Schema Validation ───────────────────────────────────────────────────
+export function validateNode(node, isUpdate = false) {
+  const errors = [];
+
+  if (!isUpdate) {
+    if (!node.title || typeof node.title !== 'string' || !node.title.trim()) {
+      errors.push('Title is required and must be a non-empty string.');
+    } else if (/[<>:"/\\|?*]/.test(node.title)) {
+      errors.push('Title contains invalid characters for filenames: < > : " / \\ | ? *');
+    }
+  } else {
+    if (node.title !== undefined) {
+      if (typeof node.title !== 'string' || !node.title.trim()) {
+        errors.push('Title must be a non-empty string.');
+      } else if (/[<>:"/\\|?*]/.test(node.title)) {
+        errors.push('Title contains invalid characters for filenames: < > : " / \\ | ? *');
+      }
+    }
+  }
+
+  const validTypes = ['core', 'system', 'memory', 'research', 'decision', 'task', 'insight', 'note', 'archive'];
+  if (node.type !== undefined) {
+    if (!validTypes.includes(node.type)) {
+      errors.push(`Type must be one of: ${validTypes.join(', ')}`);
+    }
+  }
+
+  if (node.importance !== undefined) {
+    const importanceVal = parseInt(node.importance, 10);
+    if (isNaN(importanceVal) || importanceVal < 1 || importanceVal > 10) {
+      errors.push('Importance must be an integer between 1 and 10.');
+    }
+  }
+
+  if (node.tags !== undefined) {
+    if (!Array.isArray(node.tags) || !node.tags.every(t => typeof t === 'string')) {
+      errors.push('Tags must be an array of strings.');
+    }
+  }
+
+  if (node.content !== undefined && typeof node.content !== 'string') {
+    errors.push('Content must be a string.');
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors
+  };
 }
 
 export function archiveStaleNodes(nodes) {
