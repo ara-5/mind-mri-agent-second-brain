@@ -1,0 +1,13 @@
+{
+  "name": "second-brain",
+  "version": "1.0.0",
+  "description": "Universal offline-first AI agent second brain — Obsidian vault + knowledge graph + agent memory API",
+  "type": "module",
+  "scripts": {
+    "start":  "node api/server.js",
+    "dev":    "node --watch api/server.js",
+    "ui":     "start ui/index.html"
+  },
+  "engines": { "node": ">=18.0.0" },
+  "dependencies": {}
+}
