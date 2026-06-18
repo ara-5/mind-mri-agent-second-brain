@@ -103,21 +103,21 @@ const brain = new SecondBrain({
  */
 async function runAutoPipeline() {
   // 1. Fetch relevant context within 1 Graph Hop and 1500 token budget
-  const context = await brain.recall('Gumroad publishing requirements', 1, 1500);
+  const context = await brain.recall('API rate limiting design', 1, 1500);
   
   // 2. Inject context directly into your LLM prompt
   const llmPrompt = `
     ${context.systemPrompt}
     
-    Task: Prepare publishing schema for digital assets.
+    Task: Design rate limiter middleware for backend services.
   `;
   const result = await myLlmClient.generate(llmPrompt);
   
   // 3. Save learnings back to the shared memory bank for other agents
   await brain.remember(result, {
-    title: 'Etsy and Gumroad Publishing Schema',
+    title: 'Rate Limiting Middleware Specification',
     type: 'research',
-    tags: ['publish', 'schema', 'automated-run']
+    tags: ['infrastructure', 'security', 'rate-limit']
   });
 }
 ```
