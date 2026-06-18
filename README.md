@@ -8,7 +8,7 @@ A **zero-dependency, offline-first Graph-RAG memory system** that enables autono
 
 Designed to operate natively as an **Obsidian Vault** on the filesystem and exposed as a clean REST API and Javascript SDK. By representing memories as interconnected nodes (`[[wikilinks]]`) and using a **Breadth-First Search (BFS) graph traversal**, it filters and delivers targeted context to LLMs, reducing typical agent input sizes by **95–99%** compared to reading entire codebases or directories.
 
-![Graph Visualizer Preview](assets/dashboard_preview.png)
+![Graph Visualizer Live Demo](assets/visualizer_demo.webp)
 
 ---
 
