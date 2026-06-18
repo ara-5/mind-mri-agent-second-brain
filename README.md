@@ -8,6 +8,8 @@ A **zero-dependency, offline-first Graph-RAG memory system** that enables autono
 
 Designed to operate natively as an **Obsidian Vault** on the filesystem and exposed as a clean REST API and Javascript SDK. By representing memories as interconnected nodes (`[[wikilinks]]`) and using a **Breadth-First Search (BFS) graph traversal**, it filters and delivers targeted context to LLMs, reducing typical agent input sizes by **95–99%** compared to reading entire codebases or directories.
 
+![Graph Visualizer Preview](assets/dashboard_preview.png)
+
 ---
 
 ## 🚀 Why This Project Stands Out (Portfolio Highlights)
@@ -17,6 +19,7 @@ This project showcases several advanced backend engineering principles and data 
 *   **Zero-Dependency Node.js Backend:** Built using pure native Node.js ES Modules (`http`, `fs`, `path`, `child_process`). Instantly boots in milliseconds, is highly secure against dependency vulnerability chains, and is extremely portable.
 *   **Graph-RAG vs. Flat-RAG:** Flat RAG systems (using simple vector similarity) yield disconnected text chunks that lose context. This engine parses Obsidian-style wikilinks (`[[Page Name]]`) to build an adjacency map, tracing logical connections between ideas.
 *   **Token Economics (Optimized Context):** Rather than feeding raw file structures (~50k tokens) or arbitrary chunks into LLM context windows, agents query `/recall` to receive a pre-assembled context payload restricted to a custom token budget (~300–2,000 tokens), preventing model attention degradation.
+*   **Native File System Hot-Reloading (`fs.watch()`):** Automatically invalidates and refreshes the memory index in real time when files are edited (either manually in Obsidian or programmatically via the API). Built using native file system events with a debounce timer to sustain sub-millisecond query performance.
 *   **Human-Agent-in-the-Loop Coordination:** Because memories are serialized as plain Markdown files (`.md`) with YAML frontmatter, a human can open the same folder in Obsidian to audit agent reasoning, edit notes, or add guidelines directly into the graph.
 *   **Asynchronous Auto-Git Sync:** Features an optional background syncing process. When agents write new thoughts, the server asynchronously handles staging, committing, and pushing updates back to GitHub, enabling seamless coordination across cloud VMs or GitHub Actions.
 
@@ -113,6 +116,33 @@ async function runAutoPipeline() {
   });
 }
 ```
+
+---
+
+## 🔒 Security & Authentication Setup
+
+By default, the server runs in local/development mode with authentication disabled. For cloud deployments, multi-agent networks, or when exposing the REST API endpoints publicly, you should enforce Bearer Token authentication:
+
+1. **Set the Secret Key:**
+   Define the `BRAIN_KEY` environment variable on your system or server:
+   ```bash
+   export BRAIN_KEY="your-highly-secure-secret-token"
+   ```
+2. **Enforced Protection:**
+   Once `BRAIN_KEY` is set, all mutative endpoints (`POST /remember`, `POST /reload`, `POST /consolidate`, `PATCH /node/:id`, `DELETE /node/:id`) will block unauthorized requests and return `401 Unauthorized`.
+3. **Authorization Header:**
+   Incoming requests must include the token in the `Authorization` header:
+   ```http
+   Authorization: Bearer your-highly-secure-secret-token
+   ```
+4. **Client SDK Configuration:**
+   When initializing the Javascript client SDK, inject the token using the `apiKey` configuration option:
+   ```javascript
+   const brain = new SecondBrain({
+     api: 'http://localhost:3747',
+     apiKey: process.env.BRAIN_KEY // Or pass the token directly
+   });
+   ```
 
 ---
 
