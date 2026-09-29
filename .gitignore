@@ -23,6 +23,11 @@ lerna-debug.log*
 .DS_Store
 Thumbs.db
 
+# Regenerable semantic-embeddings cache (sdk/embeddings.js) — a SQLite file,
+# not vault content; re-derived from vault markdown via POST /embeddings/reindex.
+vault/.embeddings.db
 
+# Sandboxed code execution scratch space (sdk/sandbox.js)
+sandbox_workspace/
 
 

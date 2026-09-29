@@ -20,6 +20,15 @@
  *   POST /remember                      → write new memory to vault
  *   PATCH /node/:id                     → update node
  *   DELETE /node/:id                    → delete node
+ *   POST /tasks/submit                  → submit a multi-agent task
+ *   GET  /tasks?status=...              → list tasks
+ *   PATCH /tasks/:id                    → update a task's status
+ *   POST /messages/send                 → send an agent-to-agent message
+ *   GET  /messages/:agent?unread=false  → read an agent's inbox
+ *   GET  /org-chart                     → department/lead structure from persona tags
+ *   POST /dedup/scan                    → report near-duplicate node candidates
+ *   POST /sandbox/execute               → run a code snippet, sandboxed
+ *   POST /embeddings/reindex            → (re)compute semantic vectors for the vault
  *   GET  /export                        → full JSON export
  *   POST /reload                        → force reload vault from disk
  * ══════════════════════════════════════════════════════════════
@@ -31,13 +40,19 @@ import fs     from 'fs';
 import path   from 'path';
 import { URL } from 'url';
 import { fileURLToPath } from 'url';
-import { exec } from 'child_process';
 
 import {
   loadVault, writeNode, updateNodeFile, deleteNodeFile,
-  buildEdges, buildBacklinks, searchNodes, buildContext,
+  buildEdges, buildBacklinks, searchNodes, searchNodesWithSemantics, buildContext,
   parseWikiLinks, parseTags, validateNode,
 } from './brain_engine.js';
+import { resolveKeys } from '../sdk/models_config.js';
+import { createGitSync } from '../sdk/git_sync.js';
+import { TaskQueue } from '../sdk/task_queue.js';
+import { Messenger } from '../sdk/messenger.js';
+import { buildOrgChart } from '../sdk/org_chart.js';
+import { scanForDuplicates } from '../sdk/dedup.js';
+import { executeCode } from '../sdk/sandbox.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VAULT_DIR = path.resolve(__dirname, '..', 'vault');
@@ -111,17 +126,27 @@ function authenticate(req, res) {
   return false;
 }
 
-function gitSync(message) {
-  if (!AUTO_SYNC) return;
-  const command = `git add vault && git commit -m "${message.replace(/"/g, '\\"')}" && git push origin main`;
-  const projectRoot = path.resolve(VAULT_DIR, '..');
-  exec(command, { cwd: projectRoot }, (err, stdout, stderr) => {
-    if (err) {
-      console.error(`[brain] ❌ Git Sync failed: ${err.message}`);
-      return;
-    }
-    console.log(`[brain] 🔄 Git Sync completed: ${message}`);
-  });
+// Serialized, path-scoped auto-commit: only stages the files a caller says
+// actually changed (never a blanket `git add vault`, which would sweep up
+// any other unrelated in-progress edit into whatever commit fires next),
+// and queues concurrent writes instead of racing on .git/index.lock. Same
+// AUTO_GIT_SYNC env var as before — this is a reliability upgrade of the
+// existing feature, not a new one. See sdk/git_sync.js.
+const { gitSync, toVaultRelativePath } = createGitSync(VAULT_DIR, {
+  enabled: AUTO_SYNC,
+  onError:   (err) => console.error(`[brain] ❌ Git Sync failed: ${err.message}`),
+  onSuccess: (message) => console.log(`[brain] 🔄 Git Sync completed: ${message}`),
+});
+
+// Task queue / messenger talk to this same server over its own REST API
+// (see sdk/index.js's SecondBrain client) rather than touching the vault
+// directly, so a fresh instance per call is cheap and keeps them decoupled
+// from this file's in-memory `nodes` cache.
+function makeTaskQueue() {
+  return new TaskQueue({ apiKey: AUTH_KEY, api: `http://localhost:${PORT}`, silent: false });
+}
+function makeMessenger() {
+  return new Messenger({ apiKey: AUTH_KEY, api: `http://localhost:${PORT}`, silent: false });
 }
 
 async function callGemini(apiKey, prompt) {
@@ -270,6 +295,15 @@ const server = http.createServer(async (req, res) => {
         'POST /remember',
         'PATCH /node/:id',
         'DELETE /node/:id',
+        'POST /tasks/submit',
+        'GET  /tasks',
+        'PATCH /tasks/:id',
+        'POST /messages/send',
+        'GET  /messages/:agent',
+        'GET  /org-chart',
+        'POST /dedup/scan',
+        'POST /sandbox/execute',
+        'POST /embeddings/reindex',
         'GET  /export',
         'POST /reload',
       ],
@@ -340,12 +374,14 @@ ${memoryText}`;
       const archiveDir = path.join(VAULT_DIR, 'archive');
       if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
 
+      const changedPaths = [];
       for (const oldNode of targetNodes) {
         updateNodeFile(oldNode.filePath, {
           meta: { type: 'archive' }
         });
 
         const newPath = path.join(archiveDir, path.basename(oldNode.filePath));
+        changedPaths.push(toVaultRelativePath(oldNode.filePath), toVaultRelativePath(newPath));
         fs.renameSync(oldNode.filePath, newPath);
 
         // Broadcast delete/archive event to client
@@ -365,7 +401,8 @@ ${memoryText}`;
         timestamp: new Date().toISOString()
       });
 
-      gitSync(`consolidated ${targetNodes.length} memories into "${newNode.title}"`);
+      if (nodes[newId]) changedPaths.push(toVaultRelativePath(nodes[newId].filePath));
+      gitSync(`consolidated ${targetNodes.length} memories into "${newNode.title}"`, changedPaths);
 
       return json(res, {
         success: true,
@@ -408,11 +445,17 @@ ${memoryText}`;
   }
 
   // ── Search ─────────────────────────────────────────────────────────────
+  // Hybrid keyword + semantic search: searchNodesWithSemantics() fuses the
+  // existing TF-IDF keyword arm with a semantic-similarity arm (when an
+  // embedding provider is configured and something has been embedded) via
+  // Reciprocal Rank Fusion. With no embeddings configured, it returns
+  // exactly what searchNodes() alone would — same results, same order.
   if (method === 'GET' && p === '/search') {
     const q     = url.searchParams.get('q') || '';
     const limit = parseInt(url.searchParams.get('limit') || '10', 10);
     if (!q) return json(res, { error: 'Missing ?q= query' }, 400);
-    return json(res, { query: q, results: searchNodes(nodes, q, limit) });
+    const results = await searchNodesWithSemantics(nodes, q, limit, resolveKeys());
+    return json(res, { query: q, results });
   }
 
   // ── Recall (THE KEY AGENT ENDPOINT) ───────────────────────────────────
@@ -425,7 +468,7 @@ ${memoryText}`;
     const agentName = url.searchParams.get('agent') || 'unknown';
     if (!q) return json(res, { error: 'Missing ?q= query' }, 400);
 
-    const context = buildContext(nodes, q, hops, maxTokens);
+    const context = await buildContext(nodes, q, hops, maxTokens, resolveKeys());
 
     // Update lastAccessedAt for nodes retrieved in context
     const today = new Date().toISOString().split('T')[0];
@@ -494,7 +537,10 @@ ${memoryText}`;
     const found = Object.values(nodes).filter(n => n.tags.includes(tag));
     return json(res, {
       tag, count: found.length,
-      nodes: found.map(n => ({ id: n.id, title: n.title, type: n.type, agent: n.agent })),
+      // `tags` included (not just id/type/agent) so a caller like
+      // sdk/messenger.js's inbox()/sent() — which filters byTag() results
+      // by tag membership (e.g. 'unread') — has something to filter on.
+      nodes: found.map(n => ({ id: n.id, title: n.title, type: n.type, tags: n.tags, agent: n.agent, content: n.content })),
     });
   }
 
@@ -544,7 +590,7 @@ ${memoryText}`;
       timestamp: new Date().toISOString()
     });
 
-    gitSync(`remember memory: "${node.title}" by ${node.agent}`);
+    gitSync(`remember memory: "${node.title}" by ${node.agent}`, nodes[id] ? [toVaultRelativePath(nodes[id].filePath)] : []);
     return json(res, { success: true, id, node: nodes[id] || node }, 201);
   }
 
@@ -576,11 +622,12 @@ ${memoryText}`;
       return json(res, { error: 'Validation Error', details: validation.errors }, 400);
     }
 
+    const filePathBeforeUpdate = node.filePath;
     const ok   = updateNodeFile(node.filePath, {
       title:   body.title   || node.title,
       content: body.content !== undefined ? body.content : node.content,
-      meta:    { 
-        type: body.type || node.type, 
+      meta:    {
+        type: body.type || node.type,
         tags: body.tags || node.tags,
         importance: body.importance || node.importance,
         lastAccessedAt: new Date().toISOString().split('T')[0]
@@ -588,14 +635,14 @@ ${memoryText}`;
     });
     if (ok) {
       reload();
-      
+
       broadcast('update', {
         id,
         node: nodes[id],
         timestamp: new Date().toISOString()
       });
 
-      gitSync(`update memory: "${body.title || node.title}"`);
+      gitSync(`update memory: "${body.title || node.title}"`, [toVaultRelativePath(filePathBeforeUpdate)]);
     }
     return json(res, { success: ok, id });
   }
@@ -606,6 +653,7 @@ ${memoryText}`;
     const id   = decodeURIComponent(deleteMatch[1]);
     const node = nodes[id];
     if (!node) return json(res, { error: 'Node not found', id }, 404);
+    const deletedPath = toVaultRelativePath(node.filePath);
     deleteNodeFile(node.filePath);
     reload();
     console.log(`[brain] 🗑️ Deleted: "${node.title}"`);
@@ -616,8 +664,143 @@ ${memoryText}`;
       timestamp: new Date().toISOString()
     });
 
-    gitSync(`forget memory: "${node.title}"`);
+    gitSync(`forget memory: "${node.title}"`, [deletedPath]);
     return json(res, { success: true });
+  }
+
+  // ── Tasks: submit (POST) ────────────────────────────────────────────────
+  if (method === 'POST' && p === '/tasks/submit') {
+    const body = await readBody(req);
+    if (!body.prompt) return json(res, { error: 'Missing required field: prompt' }, 400);
+    const result = await makeTaskQueue().submit(body.prompt, body.agents || [], {
+      title: body.title,
+      priority: body.priority,
+      tags: body.tags,
+      dependencies: body.dependencies,
+    });
+    reload();
+    gitSync(`task submitted: "${body.title || body.prompt.slice(0, 60)}"`,
+      result.nodeId && nodes[result.nodeId] ? [toVaultRelativePath(nodes[result.nodeId].filePath)] : []);
+    return json(res, { success: true, ...result }, 201);
+  }
+
+  // ── Tasks: status update (PATCH) ─────────────────────────────────────────
+  const taskPatchMatch = p.match(/^\/tasks\/(.+)$/);
+  if (method === 'PATCH' && taskPatchMatch) {
+    const id = decodeURIComponent(taskPatchMatch[1]);
+    const body = await readBody(req);
+    if (!body.status) return json(res, { error: 'Missing required field: status' }, 400);
+    try {
+      const tq = makeTaskQueue();
+      await tq.setStatus(id, body.status, body.content !== undefined ? { content: body.content } : {});
+      reload();
+      // A completed/failed/cancelled task may unblock others waiting on it.
+      let released = 0;
+      if (['completed', 'failed', 'cancelled'].includes(body.status)) {
+        released = await tq.releaseDependents(id);
+        if (released) reload();
+      }
+      gitSync(`task status -> ${body.status}: ${id}`, nodes[id] ? [toVaultRelativePath(nodes[id].filePath)] : []);
+      return json(res, { success: true, id, status: body.status, releasedDependents: released });
+    } catch (err) {
+      return json(res, { error: err.message }, 400);
+    }
+  }
+
+  // ── Tasks: list (GET) ────────────────────────────────────────────────────
+  if (method === 'GET' && p === '/tasks') {
+    const status = url.searchParams.get('status');
+    const found = Object.values(nodes).filter(n => n.type === 'task' && (!status || n.tags.includes(status)));
+    return json(res, {
+      count: found.length,
+      tasks: found.map(n => ({
+        id: n.id, title: n.title, tags: n.tags, content: n.content, createdAt: n.createdAt,
+      })),
+    });
+  }
+
+  // ── Messages: send (POST) ────────────────────────────────────────────────
+  if (method === 'POST' && p === '/messages/send') {
+    const body = await readBody(req);
+    if (!body.toAgent || !body.content) {
+      return json(res, { error: 'Missing required fields: toAgent, content' }, 400);
+    }
+    const result = await makeMessenger().send(body.fromAgent || 'unknown', body.toAgent, body.content, {
+      subject: body.subject,
+      taskId:  body.taskId,
+    });
+    reload();
+    gitSync(`message: ${body.fromAgent || 'unknown'} -> ${body.toAgent}`,
+      result?.id && nodes[result.id] ? [toVaultRelativePath(nodes[result.id].filePath)] : []);
+    return json(res, { success: true, id: result?.id }, 201);
+  }
+
+  // ── Messages: inbox (GET) ─────────────────────────────────────────────────
+  const messagesGetMatch = p.match(/^\/messages\/(.+)$/);
+  if (method === 'GET' && messagesGetMatch) {
+    const agentName  = decodeURIComponent(messagesGetMatch[1]);
+    const unreadOnly = url.searchParams.get('unread') !== 'false';
+    const messages   = await makeMessenger().inbox(agentName, unreadOnly);
+    return json(res, { agent: agentName, count: messages.length, messages });
+  }
+
+  // ── Org chart (GET) ───────────────────────────────────────────────────────
+  // Derived read-only from agent-persona nodes already in the vault (tags
+  // and/or explicit department/reportsTo frontmatter) — see sdk/org_chart.js.
+  if (method === 'GET' && p === '/org-chart') {
+    const agentEntries = Object.values(nodes).filter(n => n.type === 'agent');
+    return json(res, buildOrgChart(agentEntries));
+  }
+
+  // ── Dedup: scan for near-duplicate nodes (POST) ───────────────────────────
+  // Reporting only by default (dryRun=true) — never auto-merges. Pass
+  // { dryRun: false } to acknowledge the report was reviewed; this endpoint
+  // still never writes to the vault itself either way, it only judges and
+  // reports candidates for a human (or a follow-up call) to act on.
+  if (method === 'POST' && p === '/dedup/scan') {
+    const body = await readBody(req);
+    const dryRun = body.dryRun !== false;
+    const keys = resolveKeys(body);
+    const candidates = await scanForDuplicates(nodes, {
+      embeddingKeys: keys,
+      llmKeys: keys,
+      judge: body.judge !== false,
+      threshold: body.threshold,
+      logFn: (m) => console.log(`[dedup] ${m}`),
+    });
+    return json(res, { dryRun, candidateCount: candidates.length, candidates });
+  }
+
+  // ── Sandbox: execute code (POST) ──────────────────────────────────────────
+  if (method === 'POST' && p === '/sandbox/execute') {
+    const body = await readBody(req);
+    if (!body.code || !body.language) {
+      return json(res, { error: 'Missing required fields: code, language' }, 400);
+    }
+    if (!['python', 'javascript'].includes(body.language)) {
+      return json(res, { error: 'language must be "python" or "javascript"' }, 400);
+    }
+    const result = await executeCode(body.code, body.language, body.timeoutMs || 5000);
+    return json(res, result);
+  }
+
+  // ── Embeddings: force reindex (POST) ──────────────────────────────────────
+  // Runs in the background so it doesn't block the response — a full-vault
+  // reindex can take a while. No-op-ish (fast, all-cache-hit) on repeat runs
+  // since updateNodeEmbedding() skips any node whose content hash is
+  // unchanged. Requires an embedding provider key (OPENAI_API_KEY /
+  // GEMINI_API_KEY, or the optional local model) to do anything.
+  if (method === 'POST' && p === '/embeddings/reindex') {
+    const body = await readBody(req);
+    const keys = resolveKeys(body);
+    (async () => {
+      const allNodes = Object.values(nodes).filter(n => n.type !== 'archive');
+      console.log(`[embeddings] Starting batch semantic reindexing for ${allNodes.length} nodes...`);
+      const { batchUpdateNodeEmbeddings } = await import('../sdk/embeddings.js');
+      const { processed, failed } = await batchUpdateNodeEmbeddings(allNodes, keys);
+      console.log(`[embeddings] Batch reindexing finished. Processed: ${processed}, Failed: ${failed}.`);
+    })().catch(e => console.error('[embeddings] Reindexing error:', e.message));
+    return json(res, { success: true, message: 'Batch reindexing started in the background.' }, 202);
   }
 
   // ── Export ────────────────────────────────────────────────────────────
