@@ -10,6 +10,7 @@
 import fs   from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { getEmbedding, getEmbeddingsCache } from '../sdk/embeddings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VAULT_DIR = path.resolve(__dirname, '..', 'vault');
@@ -111,6 +112,10 @@ export function loadVault() {
           importance: parseInt(meta.importance, 10) || 5,
           lastAccessedAt: meta.lastAccessedAt || meta.createdAt || new Date().toISOString().split('T')[0],
           version:   parseInt(meta.version, 10) || 1,
+          // Optional org-chart frontmatter (sdk/org_chart.js) — an explicit
+          // curation always wins over the tag-derived department guess.
+          department: meta.department || null,
+          reportsTo:  meta.reportsTo  || null,
           content:   body.trim(),
           filePath:  fullPath,
           relPath,
@@ -348,6 +353,131 @@ export function searchNodes(nodes, query, limit = 10) {
   return results.sort((a, b) => b.score - a.score).slice(0, limit);
 }
 
+// ── Hybrid semantic + keyword search (Reciprocal Rank Fusion) ────────────────
+// searchNodes() above (TF-IDF over the precomputed index) is untouched and
+// stays the ENTIRE story when no embedding provider is configured — this
+// section is a pure additive enhancement layered on top of it, not a
+// replacement.
+function cosineSimilarity(v1, v2) {
+  if (!v1 || !v2 || v1.length !== v2.length) return 0;
+  let dot = 0, mag1 = 0, mag2 = 0;
+  for (let i = 0; i < v1.length; i++) {
+    dot += v1[i] * v2[i];
+    mag1 += v1[i] * v1[i];
+    mag2 += v2[i] * v2[i];
+  }
+  return mag1 && mag2 ? dot / (Math.sqrt(mag1) * Math.sqrt(mag2)) : 0;
+}
+
+// Merges several independently-ranked id lists into one score per id — the
+// standard Cormack/Clarke RRF constant (k=60): score(id) = Σ 1/(k + rank).
+// Cheap, needs no score normalization across arms (unlike averaging raw
+// similarity scores from different metrics, whose scales aren't comparable),
+// and a candidate only needs to rank well on ONE arm to surface.
+const RRF_K = 60;
+
+function reciprocalRankFusion(rankedIdLists) {
+  const scores = new Map();
+  for (const ids of rankedIdLists) {
+    ids.forEach((id, rank) => {
+      scores.set(id, (scores.get(id) || 0) + 1 / (RRF_K + rank + 1));
+    });
+  }
+  return scores;
+}
+
+// Semantic arm: rank all nodes by cosine similarity of their cached
+// embedding to the query vector, with the same title-match boosts the
+// keyword arm uses. Returns ids only (best first) so callers fuse this with
+// the keyword arm rather than comparing raw similarity scores directly.
+//
+// Checks the embeddings cache for ANY stored vector BEFORE calling
+// getEmbedding() on the query — this is what keeps a default, unconfigured
+// install from paying any embedding-provider/local-model call on every
+// single search: if nothing has ever been embedded (no provider configured,
+// nobody has run POST /embeddings/reindex), there's nothing to compare
+// against regardless, so the arm short-circuits to empty without touching
+// the network or attempting to load the optional local model.
+async function semanticRankIds(allNodes, query, keys) {
+  try {
+    const cache = getEmbeddingsCache();
+    const hasVectors = Object.values(cache).some(entry => Array.isArray(entry.vector));
+    if (!hasVectors) return [];
+
+    const queryVector = await getEmbedding(query, keys);
+    if (!queryVector) return [];
+
+    return allNodes
+      .map(node => {
+        const entry = cache[node.id];
+        let sim = entry && Array.isArray(entry.vector) ? cosineSimilarity(queryVector, entry.vector) : 0;
+        if (node.title.toLowerCase().includes(query.toLowerCase())) sim += 0.3;
+        if (node.title.toLowerCase() === query.toLowerCase()) sim += 0.5;
+        return { id: node.id, sim };
+      })
+      .filter(r => r.sim > 0.05)
+      .sort((a, b) => b.sim - a.sim)
+      .map(r => r.id);
+  } catch (err) {
+    console.warn(`[brain] Semantic search arm failed, continuing with keyword-only results: ${err.message}`);
+    return [];
+  }
+}
+
+/**
+ * Hybrid search: fuses the semantic arm (embeddings, when available) with
+ * the existing TF-IDF keyword arm via Reciprocal Rank Fusion, then applies
+ * the same recency/importance decay multiplier searchNodes() already uses.
+ *
+ * When no embedding provider is configured AND nothing has ever been
+ * embedded (the default, zero-dependency state), this returns EXACTLY
+ * searchNodes()'s own result — same ranking, same scores, same object
+ * shape — so existing behavior is unchanged until someone opts in.
+ *
+ * @param {object} nodes
+ * @param {string} query
+ * @param {number} [limit]
+ * @param {object} [keys] - resolveKeys() bundle (sdk/models_config.js); only
+ *   used if a semantic candidate pool already exists.
+ */
+export async function searchNodesWithSemantics(nodes, query, limit = 10, keys = {}) {
+  const allNodes = Object.values(nodes).filter(n => n.type !== 'archive');
+  if (!allNodes.length) return [];
+
+  const semanticIds = await semanticRankIds(allNodes, query, keys);
+  if (!semanticIds.length) return searchNodes(nodes, query, limit);
+
+  // Reuse the existing precomputed-index keyword engine for the ranking
+  // order — no re-tokenization, no second index build.
+  const keywordIds = searchNodes(nodes, query, allNodes.length).map(r => r.id);
+  const arms = [semanticIds, keywordIds].filter(a => a.length);
+  if (!arms.length) return [];
+
+  const fused = reciprocalRankFusion(arms);
+
+  return [...fused.entries()]
+    .map(([id, rrfScore]) => {
+      const node = nodes[id];
+      if (!node) return null;
+      // Post-fusion recency/importance multiplier — same role as the
+      // decay factor already applied inside searchNodes(), layered on top
+      // of the fused rank rather than replacing it.
+      const score = rrfScore * getDecayFactor(node);
+      return {
+        id:      node.id,
+        title:   node.title,
+        type:    node.type,
+        tags:    node.tags,
+        agent:   node.agent,
+        score,
+        preview: node.content.replace(/[#*\[\]`>_]/g, '').slice(0, 160).trim(),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
 // ── Node Schema Validation ───────────────────────────────────────────────────
 export function validateNode(node, isUpdate = false) {
   const errors = [];
@@ -368,7 +498,7 @@ export function validateNode(node, isUpdate = false) {
     }
   }
 
-  const validTypes = ['core', 'system', 'memory', 'research', 'decision', 'task', 'insight', 'note', 'archive'];
+  const validTypes = ['core', 'system', 'memory', 'research', 'decision', 'task', 'insight', 'note', 'archive', 'agent', 'message'];
   if (node.type !== undefined) {
     if (!validTypes.includes(node.type)) {
       errors.push(`Type must be one of: ${validTypes.join(', ')}`);
@@ -432,8 +562,13 @@ export function archiveStaleNodes(nodes) {
 }
 
 // ── Smart context retrieval: seed + N hops + token budget ────────────────────
-export function buildContext(nodes, query, hops = 1, maxTokens = 2000) {
-  const seeds = searchNodes(nodes, query, 3);
+/**
+ * @param {object} [keys] - resolveKeys() bundle, forwarded to
+ *   searchNodesWithSemantics() for the seed search. Omit for keyword-only
+ *   seeding (identical to this function's previous, synchronous behavior).
+ */
+export async function buildContext(nodes, query, hops = 1, maxTokens = 2000, keys = {}) {
+  const seeds = await searchNodesWithSemantics(nodes, query, 3, keys);
   if (!seeds.length) return { query, nodes: [], tokenEstimate: 0, systemPrompt: '' };
 
   const byTitle  = {};
