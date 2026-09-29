@@ -13,7 +13,10 @@ import { fileURLToPath } from 'url';
 import { getEmbedding, getEmbeddingsCache } from '../sdk/embeddings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const VAULT_DIR = path.resolve(__dirname, '..', 'vault');
+// Same BRAIN_VAULT override sdk/embeddings.js already honors — lets a
+// migration or test point at a scratch copy of the vault instead of the
+// real one (see migrations/README.md and test/search_hybrid.test.js).
+const VAULT_DIR = process.env.BRAIN_VAULT ? path.resolve(process.env.BRAIN_VAULT) : path.resolve(__dirname, '..', 'vault');
 
 // ── YAML frontmatter parser (simple, no deps) ────────────────────────────────
 function parseFrontmatter(content) {
