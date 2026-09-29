@@ -172,6 +172,17 @@ export function updateNodeFile(filePath, patch) {
   const currentVersion = parseInt(meta.version, 10) || 1;
   const newMeta    = { ...meta, ...(patch.meta || {}) };
   const newContent = patch.content !== undefined ? patch.content : body;
+
+  // Every node's stored content always begins with "# <title>" (this function
+  // and the node-creation path always reconstruct the file that way), so on a
+  // metadata-only patch `newContent` above is just `body`, which STILL has
+  // that leading heading line in it. Writing `# ${newTitle}\n\n${newContent}`
+  // unconditionally therefore prepended a second, duplicate heading on every
+  // metadata-only update (e.g. /recall's passive lastAccessedAt touch) —
+  // strip the old leading heading before reassembling.
+  let cleanContent = newContent.trim();
+  cleanContent = cleanContent.replace(/^#[^\n]*\r?\n+/, '').trim();
+
   const newTitle   = patch.title   || path.basename(filePath, '.md');
 
   // Determine if it was an actual user write/edit (content, title, or core meta changes)
@@ -187,7 +198,7 @@ export function updateNodeFile(filePath, patch) {
     newMeta.version = currentVersion + 1;
   }
 
-  fs.writeFileSync(filePath, buildFrontmatter(newMeta) + `# ${newTitle}\n\n${newContent}`, 'utf8');
+  fs.writeFileSync(filePath, buildFrontmatter(newMeta) + `# ${newTitle}\n\n${cleanContent}`, 'utf8');
   return true;
 }
 
