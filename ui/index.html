@@ -103,6 +103,47 @@
       overflow: hidden;
     }
 
+    /* Top-level view tabs (Graph / Org Chart). The graph visualizer above
+       is the original single view; these tabs just add a sibling pane
+       alongside it without touching its own markup or script. */
+    .view-tabs {
+      display: flex;
+      gap: 0.25rem;
+      padding: 0 1.5rem;
+      background: rgba(10, 15, 28, 0.6);
+      border-bottom: 1px solid var(--border-card);
+    }
+    .view-tab-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 0.85rem;
+      padding: 0.6rem 0.9rem;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+    }
+    .view-tab-btn:hover { color: var(--text-main); }
+    .view-tab-btn.active {
+      color: var(--text-main);
+      border-bottom-color: #a78bfa;
+    }
+    .view-pane { display: none; height: 100%; min-height: 0; flex: 1; flex-direction: column; }
+    .view-pane.active { display: flex; }
+    .org-chart-pane {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.25rem 1.5rem;
+    }
+    .org-dept-card {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 10px;
+      padding: 0.9rem 1.1rem;
+      margin-bottom: 0.75rem;
+      max-width: 640px;
+    }
+
     /* Left Sidebar: Controls & Search */
     .control-panel {
       width: 320px;
@@ -648,9 +689,16 @@
     </div>
   </header>
 
+  <!-- View tabs: the original D3 graph visualizer, plus a new Org Chart
+       view. The graph tab's own markup/behavior below is unchanged. -->
+  <div class="view-tabs">
+    <button class="view-tab-btn active" data-view="graph">Graph</button>
+    <button class="view-tab-btn" data-view="orgchart">Org Chart</button>
+  </div>
+
   <!-- Main Workspace -->
-  <div class="workspace">
-    
+  <div class="workspace view-pane active" id="view-pane-graph">
+
     <!-- Left Sidebar -->
     <div class="control-panel">
       <!-- Search Section -->
@@ -794,13 +842,41 @@
 
   </div>
 
+  <!-- View pane: Org Chart. Built with Preact+htm (see the script tags
+       below) as a real component tree — the recommended pattern for any
+       new view added to this file going forward, instead of the
+       vanilla-JS/innerHTML string concatenation used elsewhere here (e.g.
+       the graph pane's details panel, the legend, etc). This is additive:
+       the existing graph pane above is untouched. -->
+  <div class="view-pane" id="view-pane-orgchart">
+    <div class="org-chart-pane">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem; max-width:640px;">
+        <div>
+          <h3 style="font-size:0.95rem; margin:0; color:var(--text-main);">Org Chart</h3>
+          <p style="font-size:0.78rem; color:var(--text-muted); margin:0.25rem 0 0;">Departments are derived from agent-persona tags/frontmatter already in the vault (GET /org-chart).</p>
+        </div>
+        <button id="btn-refresh-orgchart" class="btn btn-secondary" style="padding:0.4rem 0.8rem; font-size:0.8rem;">Refresh</button>
+      </div>
+      <div id="org-chart-root"></div>
+    </div>
+  </div>
+
   <!-- Hover Tooltip -->
   <div id="tooltip" class="tooltip"></div>
 
   <!-- Load D3.js and Marked.js Locally -->
   <script src="d3.min.js"></script>
   <script src="marked.min.js"></script>
-  
+  <!-- Preact + htm: vendored locally (not a CDN) to keep the "fully
+       offline" property the other libs above already have. No JSX, no
+       build step — htm.bind(preact.h) turns a plain tagged template into
+       the same VNode tree JSX would. This is the recommended pattern for
+       any new view added to this file going forward (see the Org Chart
+       view's script below) — not a retroactive rewrite of the rest of
+       this file, which stays vanilla JS/innerHTML. -->
+  <script src="preact.min.js"></script>
+  <script src="htm.min.js"></script>
+
   <script>
     // Config & Connection state
     let API_URL = localStorage.getItem('sb_api_url') || 'http://localhost:3747';
@@ -1504,6 +1580,77 @@
         applyFiltersAndRender();
       });
     });
+
+    // ── View tabs (Graph / Org Chart) ───────────────────────────────────
+    // Purely additive: switches which .view-pane is visible. The graph
+    // pane's own init()/D3 code above is never touched by this.
+    document.querySelectorAll('.view-tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const view = btn.getAttribute('data-view');
+        document.querySelectorAll('.view-tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+        document.querySelectorAll('.view-pane').forEach(p => p.classList.toggle('active', p.id === `view-pane-${view}`));
+        if (view === 'orgchart') loadOrgChart();
+      });
+    });
+
+    // ── Org Chart view (Preact + htm) ───────────────────────────────────
+    // Reference pattern for new views: a real component tree via
+    // htm.bind(preact.h) instead of hand-built innerHTML string
+    // concatenation. See the <script src="preact.min.js"> comment above.
+    const html = htm.bind(preact.h);
+
+    function OrgMember({ m, depth }) {
+      return html`
+        <div key=${m.id} style=${{ marginLeft: `${depth * 16}px`, padding: '3px 0', fontSize: '0.82rem', color: 'var(--text-main)' }}>
+          ${depth > 0 ? '↳ ' : ''}${m.title}
+        </div>
+        ${(m.reports || []).map(r => html`<${OrgMember} key=${r.id} m=${r} depth=${depth + 1} />`)}
+      `;
+    }
+
+    function DepartmentCard({ d }) {
+      const leads = d.members.filter(m => (m.reports || []).length > 0);
+      const leadLabel = leads.length
+        ? `Led by ${leads.map(l => l.title).join(', ')}`
+        : 'No named lead yet — see migrations/001-assign-department-leads.mjs';
+      return html`
+        <div class="org-dept-card">
+          <div style=${{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+            <strong style=${{ fontSize: '0.9rem', color: 'var(--text-main)' }}>${d.department}</strong>
+            <span style=${{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>${d.memberCount} member${d.memberCount === 1 ? '' : 's'}</span>
+          </div>
+          <div style=${{ fontSize: '0.75rem', color: '#a5b4fc', margin: '0.2rem 0 0.5rem' }}>${leadLabel}</div>
+          <div>
+            ${d.members.map(m => html`<${OrgMember} key=${m.id} m=${m} depth=${0} />`)}
+          </div>
+        </div>
+      `;
+    }
+
+    function OrgChartView({ departments }) {
+      if (!departments.length) {
+        return html`<p style=${{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>No agent personas found in the vault yet.</p>`;
+      }
+      return html`<div>${departments.map(d => html`<${DepartmentCard} key=${d.department} d=${d} />`)}</div>`;
+    }
+
+    async function loadOrgChart() {
+      const rootEl = document.getElementById('org-chart-root');
+      if (!rootEl) return;
+      preact.render(html`<p style=${{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>Loading org chart...</p>`, rootEl);
+      let chart = { departments: [] };
+      try {
+        const res = await fetch(`${API_URL}/org-chart`, { headers: getHeaders() });
+        chart = await res.json();
+      } catch (err) {
+        preact.render(html`<p style=${{ color: '#f87171', fontSize: '0.82rem' }}>Could not reach the Second Brain API.</p>`, rootEl);
+        return;
+      }
+      preact.render(html`<${OrgChartView} departments=${chart.departments || []} />`, rootEl);
+    }
+
+    const refreshOrgChartBtn = document.getElementById('btn-refresh-orgchart');
+    if (refreshOrgChartBtn) refreshOrgChartBtn.addEventListener('click', loadOrgChart);
 
     window.onload = init;
   </script>

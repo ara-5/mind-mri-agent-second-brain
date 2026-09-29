@@ -205,7 +205,8 @@ const server = http.createServer(async (req, res) => {
 
   if (method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
 
-  const isStaticUi = p === '/' || p === '/ui' || p.startsWith('/ui/') || p === '/d3.min.js' || p === '/marked.min.js';
+  const STATIC_UI_ASSETS = ['/d3.min.js', '/marked.min.js', '/preact.min.js', '/htm.min.js'];
+  const isStaticUi = p === '/' || p === '/ui' || p.startsWith('/ui/') || STATIC_UI_ASSETS.includes(p);
   const isExempt = p === '/health' || p === '/stream' || isStaticUi;
 
   if (!isExempt) {
@@ -217,7 +218,7 @@ const server = http.createServer(async (req, res) => {
     let filePath = '';
     if (p === '/' || p === '/ui') {
       filePath = path.join(__dirname, '..', 'ui', 'index.html');
-    } else if (p === '/d3.min.js' || p === '/marked.min.js') {
+    } else if (STATIC_UI_ASSETS.includes(p)) {
       filePath = path.join(__dirname, '..', 'ui', p.slice(1));
     } else {
       const rel = p.replace(/^\/ui\//, '');
