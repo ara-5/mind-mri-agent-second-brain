@@ -183,7 +183,16 @@ export function updateNodeFile(filePath, patch) {
   let cleanContent = newContent.trim();
   cleanContent = cleanContent.replace(/^#[^\n]*\r?\n+/, '').trim();
 
-  const newTitle   = patch.title   || path.basename(filePath, '.md');
+  // A node's real displayed heading can differ from its filename (special
+  // characters get sanitized out of filenames, or the file simply predates
+  // some naming convention) — path.basename must only ever be a last-resort
+  // fallback, never the default "current title". Falling back to it
+  // unconditionally here meant ANY patch that didn't set patch.title (e.g.
+  // /recall's passive lastAccessedAt touch) silently replaced a node's real
+  // heading with its bare filename the next time it was read.
+  const existingHeadingMatch = body.match(/^\s*#[ \t]+([^\n]+)/);
+  const existingHeading = existingHeadingMatch ? existingHeadingMatch[1].trim() : path.basename(filePath, '.md');
+  const newTitle   = patch.title || existingHeading;
 
   // Determine if it was an actual user write/edit (content, title, or core meta changes)
   const isActualEdit = (patch.title && patch.title !== path.basename(filePath, '.md')) ||
