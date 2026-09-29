@@ -1,6 +1,6 @@
 # 🧠 Autonomous Agent Second Brain — Graph-RAG Memory Core
 
-[![GitHub License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![GitHub License](https://img.shields.io/badge/license-All%20Rights%20Reserved-red.svg)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-success.svg)](package.json)
 [![Platform](https://img.shields.io/badge/platform-node.js%20%3E%3D%2022.5-orange.svg)](package.json)
 [![Tests](https://img.shields.io/badge/tests-node%3A--test-blue.svg)](test)
