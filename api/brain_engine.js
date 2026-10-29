@@ -140,6 +140,53 @@ export function parseTags(text = '') {
 // path -> { mtimeMs, size, node }: parsed notes reused across loadVault() calls.
 const fileCache = new Map();
 
+// Parses one note file into a node, reusing the cached parse when the file is
+// unchanged. Reading a file costs ~30x more than stat-ing it, and every write
+// used to re-read the whole vault (3-7 s per write at 3,000 notes), so a node is
+// reused when size + mtime match. A file modified in the last couple of seconds
+// is always re-read, because coarse filesystem timestamps could otherwise hide a
+// second same-size edit.
+function readNodeFile(fullPath) {
+  const st = fs.statSync(fullPath);
+  const cached = fileCache.get(fullPath);
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size && Date.now() - st.mtimeMs > 2000) {
+    return { ...cached.node };
+  }
+
+  const raw       = fs.readFileSync(fullPath, 'utf8');
+  const { meta, body } = parseFrontmatter(raw);
+  const relPath   = path.relative(VAULT_DIR, fullPath).replace(/\\/g, '/');
+  const id        = relPath.replace(/\.md$/, '');
+  const title     = path.basename(fullPath, '.md');
+  const allTags   = [...new Set([
+    // Lowercased like inline tags, so /tag/:tag (which lowercases its
+    // argument) and the org chart's tag lookup match "tags: [Research]".
+    ...(Array.isArray(meta.tags) ? meta.tags.map(t => String(t).toLowerCase()) : []),
+    ...parseTags(body),
+  ])];
+
+  const node = {
+    id,
+    title,
+    type:      meta.type      || 'note',
+    tags:      allTags,
+    agent:     meta.agent     || null,
+    createdAt: meta.createdAt || null,
+    importance: parseInt(meta.importance, 10) || 5,
+    lastAccessedAt: meta.lastAccessedAt || meta.createdAt || new Date().toISOString().split('T')[0],
+    version:   parseInt(meta.version, 10) || 1,
+    // Optional org-chart frontmatter (sdk/org_chart.js) — an explicit
+    // curation always wins over the tag-derived department guess.
+    department: meta.department || null,
+    reportsTo:  meta.reportsTo  || null,
+    content:   body.trim(),
+    filePath:  fullPath,
+    relPath,
+  };
+  fileCache.set(fullPath, { mtimeMs: st.mtimeMs, size: st.size, node: { ...node } });
+  return node;
+}
+
 export function loadVault() {
   const nodes = {};
   const seen = new Set();
@@ -152,50 +199,9 @@ export function loadVault() {
       if (!entry.name.endsWith('.md')) continue;
 
       try {
-        // Reading a file costs ~30x more than stat-ing it, and every write used to
-        // re-read the whole vault (3-7 s per write at 3,000 notes). Reuse the parsed
-        // node when size + mtime are unchanged. A file modified in the last couple of
-        // seconds is always re-read, because coarse filesystem timestamps could
-        // otherwise hide a second same-size edit.
-        const st = fs.statSync(fullPath);
+        const node = readNodeFile(fullPath);
+        nodes[node.id] = node;
         seen.add(fullPath);
-        const cached = fileCache.get(fullPath);
-        if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size && Date.now() - st.mtimeMs > 2000) {
-          nodes[cached.node.id] = { ...cached.node };
-          continue;
-        }
-
-        const raw       = fs.readFileSync(fullPath, 'utf8');
-        const { meta, body } = parseFrontmatter(raw);
-        const relPath   = path.relative(VAULT_DIR, fullPath).replace(/\\/g, '/');
-        const id        = relPath.replace(/\.md$/, '');
-        const title     = path.basename(entry.name, '.md');
-        const allTags   = [...new Set([
-          // Lowercased like inline tags, so /tag/:tag (which lowercases its
-          // argument) and the org chart's tag lookup match "tags: [Research]".
-          ...(Array.isArray(meta.tags) ? meta.tags.map(t => String(t).toLowerCase()) : []),
-          ...parseTags(body),
-        ])];
-
-        nodes[id] = {
-          id,
-          title,
-          type:      meta.type      || 'note',
-          tags:      allTags,
-          agent:     meta.agent     || null,
-          createdAt: meta.createdAt || null,
-          importance: parseInt(meta.importance, 10) || 5,
-          lastAccessedAt: meta.lastAccessedAt || meta.createdAt || new Date().toISOString().split('T')[0],
-          version:   parseInt(meta.version, 10) || 1,
-          // Optional org-chart frontmatter (sdk/org_chart.js) — an explicit
-          // curation always wins over the tag-derived department guess.
-          department: meta.department || null,
-          reportsTo:  meta.reportsTo  || null,
-          content:   body.trim(),
-          filePath:  fullPath,
-          relPath,
-        };
-        fileCache.set(fullPath, { mtimeMs: st.mtimeMs, size: st.size, node: { ...nodes[id] } });
       } catch (e) {
         console.warn(`[brain] Could not read ${fullPath}: ${e.message}`);
       }
@@ -204,6 +210,33 @@ export function loadVault() {
 
   walk(VAULT_DIR);
   for (const cachedPath of fileCache.keys()) if (!seen.has(cachedPath)) fileCache.delete(cachedPath); // deleted/renamed files
+  precomputeSearchIndex(nodes);
+  return nodes;
+}
+
+/**
+ * Incremental update: re-read only the given files (created, edited or deleted)
+ * and refresh the search index, instead of walking and re-parsing the whole
+ * vault. Mutates and returns `nodes`. Use loadVault() when the set of changed
+ * files is unknown (external edits, bulk moves).
+ */
+export function refreshNodes(nodes, changedPaths) {
+  for (const changed of changedPaths) {
+    const abs = path.resolve(changed);
+    if (!abs.startsWith(VAULT_DIR + path.sep) || !abs.endsWith('.md')) continue;
+    const id = path.relative(VAULT_DIR, abs).replace(/\\/g, '/').replace(/\.md$/, '');
+    if (!fs.existsSync(abs)) {
+      delete nodes[id];
+      fileCache.delete(abs);
+      continue;
+    }
+    try {
+      const node = readNodeFile(abs);
+      nodes[node.id] = node;
+    } catch (e) {
+      console.warn(`[brain] Could not read ${abs}: ${e.message}`);
+    }
+  }
   precomputeSearchIndex(nodes);
   return nodes;
 }
@@ -401,31 +434,37 @@ function getDecayFactor(node) {
 
 // ── TF-IDF Caching Search Engine & Optimizations ──────────────────────────────
 let searchIndex = {
-  docTokens: [], // Array of { id, tokens, magnitude, docTf }
+  docTokens: [], // Array of { id, magnitude, docTf }
   df: {},
   N: 0
 };
+
+// Per-note term frequencies, keyed by node id. Tokenizing is the expensive part
+// of building the index, and it only has to be redone for a note whose indexed
+// text changed. df / idf / magnitudes depend on the whole corpus, so those are
+// recomputed each time, which is cheap (no regex work).
+const docTfCache = new Map(); // node id -> { text, docTf }
 
 export function precomputeSearchIndex(nodes) {
   const allNodes = Object.values(nodes).filter(n => n.type !== 'archive');
   const N = allNodes.length;
   const df = {};
+  const live = new Set();
 
   const docTokens = allNodes.map(node => {
+    live.add(node.id);
     const text = `${node.title} ${node.title} ${node.tags.join(' ')} ${node.tags.join(' ')} ${node.content}`;
-    const tokens = tokenize(text);
-    const uniqueTokens = new Set(tokens);
-    for (const t of uniqueTokens) {
-      df[t] = (df[t] || 0) + 1;
+    let entry = docTfCache.get(node.id);
+    if (!entry || entry.text !== text) {
+      const docTf = {};
+      for (const t of tokenize(text)) docTf[t] = (docTf[t] || 0) + 1;
+      entry = { text, docTf };
+      docTfCache.set(node.id, entry);
     }
-
-    const docTf = {};
-    for (const t of tokens) {
-      docTf[t] = (docTf[t] || 0) + 1;
-    }
-
-    return { id: node.id, tokens, docTf };
+    for (const t of Object.keys(entry.docTf)) df[t] = (df[t] || 0) + 1;
+    return { id: node.id, docTf: entry.docTf };
   });
+  for (const id of docTfCache.keys()) if (!live.has(id)) docTfCache.delete(id);
 
   docTokens.forEach(doc => {
     let docMagnitudeSq = 0;

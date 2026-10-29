@@ -225,3 +225,49 @@ test('a note edited within the last seconds is always re-read (coarse mtimes can
   fs.utimesSync(file, mtime, mtime);                                    // identical mtime
   assert.match(loadVault()['Racy'].content, /first BBB/);
 });
+
+test('refreshNodes gives the same nodes and search results as a full reload', async () => {
+  const { loadVault, refreshNodes, searchNodes } = await import('../api/brain_engine.js');
+  const nodes = loadVault();
+
+  // create, edit and delete one note each, then refresh only those paths
+  const createdId = writeNode({ title: 'Incremental New', type: 'note', content: 'xylophone quartz', agent: 't' });
+  const createdPath = path.join(tmpVault, `${createdId}.md`);
+
+  const editedId = writeNode({ title: 'Incremental Edit', type: 'note', content: 'oldterm marmalade', agent: 't' });
+  const editedPath = path.join(tmpVault, `${editedId}.md`);
+  loadVault(); // make sure the edit target is already known/indexed
+  const editTarget = refreshNodes(nodes, [editedPath]);
+  assert.ok(editTarget[editedId]);
+  updateNodeFile(editedPath, { content: 'newterm persimmon' });
+
+  const deletedId = writeNode({ title: 'Incremental Gone', type: 'note', content: 'ephemeral walrus', agent: 't' });
+  const deletedPath = path.join(tmpVault, `${deletedId}.md`);
+  refreshNodes(nodes, [deletedPath]);
+  assert.ok(searchNodes(nodes, 'walrus').some(r => r.id === deletedId));
+  fs.unlinkSync(deletedPath);
+
+  refreshNodes(nodes, [createdPath, editedPath, deletedPath]);
+
+  assert.ok(nodes[createdId], 'new note present');
+  assert.equal(nodes[deletedId], undefined, 'deleted note removed');
+  assert.ok(searchNodes(nodes, 'xylophone').some(r => r.id === createdId), 'new note searchable');
+  assert.ok(searchNodes(nodes, 'persimmon').some(r => r.id === editedId), 'edited content searchable');
+  assert.ok(!searchNodes(nodes, 'marmalade').some(r => r.id === editedId), 'old content no longer matches');
+  assert.ok(!searchNodes(nodes, 'walrus').some(r => r.id === deletedId), 'deleted note no longer searchable');
+
+  // The incrementally maintained state must equal a from-scratch reload.
+  const full = loadVault();
+  assert.deepEqual(Object.keys(nodes).sort(), Object.keys(full).sort());
+  for (const q of ['xylophone', 'persimmon', 'incremental', 'quartz']) {
+    assert.deepEqual(searchNodes(nodes, q).map(r => r.id), searchNodes(full, q).map(r => r.id), `query "${q}"`);
+  }
+});
+
+test('refreshNodes ignores paths outside the vault and non-markdown files', async () => {
+  const { loadVault, refreshNodes } = await import('../api/brain_engine.js');
+  const nodes = loadVault();
+  const before = Object.keys(nodes).length;
+  refreshNodes(nodes, [path.join(tmpVault, '..', 'outside.md'), path.join(tmpVault, 'notes.txt'), '/etc/passwd']);
+  assert.equal(Object.keys(nodes).length, before);
+});

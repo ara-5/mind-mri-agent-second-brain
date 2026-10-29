@@ -42,7 +42,7 @@ import { URL } from 'url';
 import { fileURLToPath } from 'url';
 
 import {
-  loadVault, writeNode, updateNodeFile, deleteNodeFile,
+  loadVault, refreshNodes, writeNode, updateNodeFile, deleteNodeFile,
   buildEdges, buildBacklinks, searchNodes, searchNodesWithSemantics, buildContext,
   parseWikiLinks, parseTags, validateNode,
 } from './brain_engine.js';
@@ -73,6 +73,12 @@ const SELF_API  = `http://${SELF_HOST.includes(':') ? `[${SELF_HOST}]` : SELF_HO
 // ── In-memory cache (reloaded on vault change) ───────────────────────────────
 let nodes = {};
 let lastReload = null;
+
+// Incremental: re-read only the files a handler just wrote/deleted.
+function refresh(paths) {
+  nodes      = refreshNodes(nodes, paths);
+  lastReload = new Date().toISOString();
+}
 
 function reload() {
   nodes      = loadVault();
@@ -649,7 +655,7 @@ ${memoryText}`;
 
     const subdir = body.subdir || (body.agent ? `agents/${body.agent}` : '');
     const id     = writeNode(node, subdir);
-    reload();
+    refresh([path.join(VAULT_DIR, `${id}.md`)]);
 
     console.log(`[brain] 📝 New memory: "${node.title}" (${node.agent})`);
     
@@ -703,7 +709,7 @@ ${memoryText}`;
       },
     });
     if (ok) {
-      reload();
+      refresh([filePathBeforeUpdate]);
 
       broadcast('update', {
         id,
@@ -724,7 +730,7 @@ ${memoryText}`;
     if (!node) return json(res, { error: 'Node not found', id }, 404);
     const deletedPath = toVaultRelativePath(node.filePath);
     deleteNodeFile(node.filePath);
-    reload();
+    refresh([node.filePath]);
     console.log(`[brain] 🗑️ Deleted: "${node.title}"`);
 
     broadcast('delete', {
@@ -747,7 +753,7 @@ ${memoryText}`;
       tags: body.tags,
       dependencies: body.dependencies,
     });
-    reload();
+    // (the inner POST /remember made by the task queue already refreshed `nodes`)
     gitSync(`task submitted: "${body.title || body.prompt.slice(0, 60)}"`,
       result.nodeId && nodes[result.nodeId] ? [toVaultRelativePath(nodes[result.nodeId].filePath)] : []);
     return json(res, { success: true, ...result }, 201);
@@ -762,12 +768,10 @@ ${memoryText}`;
     try {
       const tq = makeTaskQueue();
       await tq.setStatus(id, body.status, body.content !== undefined ? { content: body.content } : {});
-      reload();
       // A completed/failed/cancelled task may unblock others waiting on it.
       let released = 0;
       if (['completed', 'failed', 'cancelled'].includes(body.status)) {
         released = await tq.releaseDependents(id);
-        if (released) reload();
       }
       gitSync(`task status -> ${body.status}: ${id}`, nodes[id] ? [toVaultRelativePath(nodes[id].filePath)] : []);
       return json(res, { success: true, id, status: body.status, releasedDependents: released });
@@ -798,7 +802,6 @@ ${memoryText}`;
       subject: body.subject,
       taskId:  body.taskId,
     });
-    reload();
     gitSync(`message: ${body.fromAgent || 'unknown'} -> ${body.toAgent}`,
       result?.id && nodes[result.id] ? [toVaultRelativePath(nodes[result.id].filePath)] : []);
     return json(res, { success: true, id: result?.id }, 201);
