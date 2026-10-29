@@ -183,10 +183,24 @@ export function writeNode(node, subdir = '') {
     ? path.join(VAULT_DIR, subdir)
     : path.join(VAULT_DIR, node.type === 'note' ? '' : node.type + 's');
 
-  fs.mkdirSync(folder, { recursive: true });
+  // `subdir` (and the agent name it is often derived from) comes straight from
+  // the request, so it must never be able to escape the vault (e.g. "../..").
+  const resolvedFolder = path.resolve(folder);
+  if (resolvedFolder !== VAULT_DIR && !resolvedFolder.startsWith(VAULT_DIR + path.sep)) {
+    const err = new Error('Invalid subdir: must stay inside the vault');
+    err.status = 400;
+    throw err;
+  }
+  fs.mkdirSync(resolvedFolder, { recursive: true });
 
   const safeName = node.title.replace(/[<>:"/\\|?*]/g, '-');
-  const filePath = path.join(folder, `${safeName}.md`);
+  // Never silently overwrite a different memory that happens to share a title
+  // (two tasks with the same 60-char prefix, or two default-subject messages,
+  // used to destroy each other): pick the next free " (n)" name instead.
+  let filePath = path.join(resolvedFolder, `${safeName}.md`);
+  for (let n = 2; fs.existsSync(filePath); n++) {
+    filePath = path.join(resolvedFolder, `${safeName} (${n}).md`);
+  }
 
   const meta = {
     type:      node.type      || 'note',
@@ -199,7 +213,7 @@ export function writeNode(node, subdir = '') {
   };
 
   const content = buildFrontmatter(meta) + `# ${node.title}\n\n${node.content || ''}`;
-  fs.writeFileSync(filePath, content, 'utf8');
+  fs.writeFileSync(filePath, content, { encoding: 'utf8', flag: 'wx' });
 
   // Return node id
   const relPath = path.relative(VAULT_DIR, filePath).replace(/\\/g, '/');
@@ -560,6 +574,8 @@ export function validateNode(node, isUpdate = false) {
       errors.push('Title is required and must be a non-empty string.');
     } else if (/[<>:"/\\|?*]/.test(node.title)) {
       errors.push('Title contains invalid characters for filenames: < > : " / \\ | ? *');
+    } else if (/[\u0000-\u001f]/.test(node.title)) {
+      errors.push('Title must not contain control characters or newlines.');
     }
   } else {
     if (node.title !== undefined) {
@@ -567,6 +583,8 @@ export function validateNode(node, isUpdate = false) {
         errors.push('Title must be a non-empty string.');
       } else if (/[<>:"/\\|?*]/.test(node.title)) {
         errors.push('Title contains invalid characters for filenames: < > : " / \\ | ? *');
+      } else if (/[\u0000-\u001f]/.test(node.title)) {
+        errors.push('Title must not contain control characters or newlines.');
       }
     }
   }

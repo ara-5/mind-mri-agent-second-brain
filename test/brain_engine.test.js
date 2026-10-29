@@ -9,7 +9,7 @@ import path from 'path';
 const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'second-brain-brain-engine-test-'));
 process.env.BRAIN_VAULT = tmpVault;
 
-const { writeNode, updateNodeFile } = await import('../api/brain_engine.js');
+const { writeNode, updateNodeFile, validateNode } = await import('../api/brain_engine.js');
 
 test('updateNodeFile does not duplicate the H1 heading on a metadata-only patch', () => {
   const id = writeNode({
@@ -86,4 +86,28 @@ test('old but relevant notes remain searchable (recency re-ranks, never hides)',
   const nodes = loadVault();
   const hits = searchNodes(nodes, 'idempotency payment');
   assert.ok(hits.some(h => h.id === id), 'a years-old relevant note must still be returned');
+});
+
+test('writeNode refuses a subdir that escapes the vault', () => {
+  for (const subdir of ['../escape', '../../escape', 'agents/../../escape']) {
+    assert.throws(
+      () => writeNode({ title: 'Escape', type: 'memory', content: 'x', agent: 't' }, subdir),
+      /Invalid subdir/,
+      `subdir ${JSON.stringify(subdir)} should be rejected`
+    );
+  }
+  assert.ok(!fs.existsSync(path.join(tmpVault, '..', 'escape', 'Escape.md')));
+});
+
+test('writeNode never overwrites an existing note that shares a title', () => {
+  const first = writeNode({ title: 'Same Title', type: 'memory', content: 'first', agent: 't' });
+  const second = writeNode({ title: 'Same Title', type: 'memory', content: 'second', agent: 't' });
+  assert.notEqual(first, second);
+  assert.match(fs.readFileSync(path.join(tmpVault, `${first}.md`), 'utf8'), /first/);
+  assert.match(fs.readFileSync(path.join(tmpVault, `${second}.md`), 'utf8'), /second/);
+});
+
+test('validateNode rejects control characters in a title', () => {
+  assert.equal(validateNode({ title: 'a\nb' }).valid, false);
+  assert.equal(validateNode({ title: 'fine title' }).valid, true);
 });
