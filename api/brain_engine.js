@@ -299,6 +299,12 @@ function tokenize(text) {
     .filter(w => w.length > 1);
 }
 
+// Recency only RE-RANKS results; it must never hide a relevant note. With pure
+// exponential decay a default-importance note (30-day half-life) fell below the
+// result threshold after about two months, so old-but-relevant memories silently
+// vanished from search and recall. The floor keeps them findable.
+const DECAY_FLOOR = 0.25;
+
 function getDecayFactor(node) {
   const today = new Date();
   const lastAccessStr = node.lastAccessedAt || node.createdAt || new Date().toISOString().split('T')[0];
@@ -312,7 +318,7 @@ function getDecayFactor(node) {
   else if (importance <= 4) halfLife = 7;
   
   const lambda = 0.693 / halfLife;
-  return Math.exp(-lambda * diffDays);
+  return DECAY_FLOOR + (1 - DECAY_FLOOR) * Math.exp(-lambda * diffDays);
 }
 
 // ── TF-IDF Caching Search Engine & Optimizations ──────────────────────────────
@@ -403,7 +409,8 @@ export function searchNodes(nodes, query, limit = 10) {
     // Apply Time-Decay weight
     const score = cosineSim * getDecayFactor(node);
 
-    if (score > 0.05) {
+    // Gate on relevance (cosine), not on the recency-weighted score.
+    if (cosineSim > 0.05) {
       results.push({
         id:      node.id,
         title:   node.title,

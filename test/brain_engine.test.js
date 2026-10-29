@@ -70,3 +70,20 @@ test('updateNodeFile still updates content correctly on a real content edit', ()
   assert.equal(headingCount, 1, `expected exactly one heading, got:\n${body}`);
   assert.match(body, /^# Second Node\n\nUpdated body\.\s*$/);
 });
+
+test('old but relevant notes remain searchable (recency re-ranks, never hides)', async () => {
+  const id = writeNode({
+    title: 'Ancient Idempotency Decision',
+    type: 'decision',
+    content: 'Use idempotency keys for payment retries.',
+    agent: 'test',
+  });
+  const filePath = path.join(tmpVault, `${id}.md`);
+  // Backdate well past several half-lives (default importance => 30 days).
+  updateNodeFile(filePath, { meta: { createdAt: '2020-01-01', lastAccessedAt: '2020-01-01' } });
+
+  const { loadVault, searchNodes } = await import('../api/brain_engine.js');
+  const nodes = loadVault();
+  const hits = searchNodes(nodes, 'idempotency payment');
+  assert.ok(hits.some(h => h.id === id), 'a years-old relevant note must still be returned');
+});
