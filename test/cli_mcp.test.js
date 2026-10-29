@@ -71,3 +71,50 @@ test('mcp tools/call rejects missing required arguments instead of sending "unde
   assert.match(replies[1].result.content[0].text, /id/);
   assert.match(replies[2].result.content[0].text, /content/);
 });
+
+function rawMcp(input) {
+  const r = spawnSync(process.execPath, [path.join(ROOT, 'mcp', 'server.js')], {
+    input, encoding: 'utf8', timeout: 20_000, env: { ...process.env, BRAIN_PORT: '1' },
+  });
+  return r.stdout.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+}
+
+test('mcp: unparseable input gets a JSON-RPC parse error instead of silence', () => {
+  const out = rawMcp('{not json\n[1,2]\n"str"\n');
+  assert.equal(out.length, 3);
+  assert.equal(out[0].error.code, -32700);
+  assert.equal(out[0].id, null);
+  assert.equal(out[1].error.code, -32600);
+  assert.equal(out[2].error.code, -32600);
+});
+
+test('mcp: a final message without a trailing newline is still handled', () => {
+  const out = rawMcp('{"jsonrpc":"2.0","id":7,"method":"ping"}');
+  assert.deepEqual(out, [{ jsonrpc: '2.0', id: 7, result: {} }]);
+});
+
+test('mcp: responses from the client are ignored; malformed requests get -32600', () => {
+  const out = rawMcp([
+    '{"jsonrpc":"2.0","id":1,"result":{}}',
+    '{"jsonrpc":"2.0","id":2,"error":{"code":1,"message":"x"}}',
+    '{"jsonrpc":"2.0","id":3}',
+    '{"jsonrpc":"2.0","id":4,"method":"nope/nothing"}',
+  ].join('\n') + '\n');
+  assert.equal(out.length, 2);
+  assert.equal(out[0].id, 3);
+  assert.equal(out[0].error.code, -32600);
+  assert.equal(out[1].id, 4);
+  assert.equal(out[1].error.code, -32601);
+});
+
+test('mcp: initialize negotiates the protocol version and ships instructions', () => {
+  const out = rawMcp([
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}',
+    '{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}',
+    '{"jsonrpc":"2.0","id":3,"method":"tools/list"}',
+  ].join('\n') + '\n');
+  assert.equal(out[0].result.protocolVersion, '2025-03-26');
+  assert.equal(out[1].result.protocolVersion, '2025-11-25');
+  assert.match(out[0].result.instructions, /brain_recall/);
+  assert.ok(out[2].result.tools.every(t => t.title && t.annotations));
+});
