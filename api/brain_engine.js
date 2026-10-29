@@ -682,6 +682,27 @@ export async function searchNodesWithSemantics(nodes, query, limit = 10, keys = 
 const MAX_TITLE_LENGTH = 200;
 const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
+// An agent name (and each subdir segment) becomes a folder name, so it must be a
+// single safe path segment on every platform.
+export function nameSegmentProblem(name, label) {
+  if (typeof name !== 'string') return `${label} must be a string.`;
+  if (!name.trim() || name.length > 100) return `${label} must be 1-100 characters.`;
+  if (/[<>:"/\\|?*\u0000-\u001f]/.test(name)) return `${label} contains invalid characters: < > : " / \\ | ? * or control characters.`;
+  if (name === '.' || name === '..' || /[. ]$/.test(name) || /^\s/.test(name)) return `${label} must not be "." or "..", start with a space, or end with a space or period.`;
+  if (WINDOWS_RESERVED_NAME.test(name.trim())) return `${label} is a reserved filename on Windows.`;
+  return null;
+}
+
+export function subdirProblem(subdir) {
+  if (typeof subdir !== 'string') return 'subdir must be a string.';
+  if (subdir.length > 200) return 'subdir must be at most 200 characters.';
+  for (const seg of subdir.split('/')) {
+    const problem = nameSegmentProblem(seg, 'subdir segment');
+    if (problem) return problem;
+  }
+  return null;
+}
+
 function titleProblem(title) {
   if (typeof title !== 'string' || !title.trim()) return 'Title is required and must be a non-empty string.';
   if (/[<>:"/\\|?*]/.test(title)) return 'Title contains invalid characters for filenames: < > : " / \\ | ? *';
@@ -698,6 +719,15 @@ export function validateNode(node, isUpdate = false) {
 
   if (!isUpdate || node.title !== undefined) {
     const problem = titleProblem(node.title);
+    if (problem) errors.push(problem);
+  }
+
+  if (node.agent != null && node.agent !== '') {
+    const problem = nameSegmentProblem(node.agent, 'agent');
+    if (problem) errors.push(problem);
+  }
+  if (node.subdir != null && node.subdir !== '') {
+    const problem = subdirProblem(node.subdir);
     if (problem) errors.push(problem);
   }
 

@@ -271,3 +271,61 @@ test('refreshNodes ignores paths outside the vault and non-markdown files', asyn
   refreshNodes(nodes, [path.join(tmpVault, '..', 'outside.md'), path.join(tmpVault, 'notes.txt'), '/etc/passwd']);
   assert.equal(Object.keys(nodes).length, before);
 });
+
+test('validateNode rejects unsafe agent names and subdirs', () => {
+  for (const agent of ['<script>', 'a/b', '..', '.', '\n', 'x'.repeat(101), ' lead', 'trail.', 'CON', 5, {}, []]) {
+    assert.equal(validateNode({ title: 't', agent }).valid, false, `agent ${JSON.stringify(agent)}`);
+  }
+  for (const subdir of ['../x', 'a/../b', '/abs', 'a//b', 'a/<b>', 5, true, {}, [], 'x/'.repeat(120)]) {
+    assert.equal(validateNode({ title: 't', subdir }).valid, false, `subdir ${JSON.stringify(subdir)}`);
+  }
+  for (const agent of [undefined, null, '', 'pipeline-agent', 'Research Lead', 'web-dashboard-simulator', 'agent_1']) {
+    assert.equal(validateNode({ title: 't', agent }).valid, true, `agent ${JSON.stringify(agent)}`);
+  }
+  for (const subdir of [undefined, null, '', 'agents/pipeline-agent', 'messages/bob', 'tasks']) {
+    assert.equal(validateNode({ title: 't', subdir }).valid, true, `subdir ${JSON.stringify(subdir)}`);
+  }
+});
+
+test('randomized create/edit/delete: incremental refresh always equals a full reload', async () => {
+  const { loadVault, refreshNodes, searchNodes } = await import('../api/brain_engine.js');
+  // small deterministic PRNG so a failure is reproducible
+  let seed = 12345;
+  const rand = (n) => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed % n; };
+  const vocab = ['apple', 'bridge', 'copper', 'dragon', 'ember', 'falcon', 'glacier', 'harbor', 'island', 'jungle'];
+  const phrase = () => Array.from({ length: 4 }, () => vocab[rand(vocab.length)]).join(' ');
+
+  const nodes = loadVault();
+  const live = new Map(); // id -> file path
+  for (let step = 0; step < 60; step++) {
+    const op = rand(3);
+    if (op === 0 || live.size === 0) {
+      const id = writeNode({ title: `Rand ${step}`, type: 'note', content: phrase(), agent: 'rand', tags: ['r' + rand(4)] });
+      const file = path.join(tmpVault, `${id}.md`);
+      live.set(id, file);
+      refreshNodes(nodes, [file]);
+    } else {
+      const ids = [...live.keys()];
+      const id = ids[rand(ids.length)];
+      const file = live.get(id);
+      if (op === 1) {
+        updateNodeFile(file, { content: phrase() });
+      } else {
+        fs.unlinkSync(file);
+        live.delete(id);
+      }
+      refreshNodes(nodes, [file]);
+    }
+  }
+
+  const full = loadVault();
+  assert.deepEqual(Object.keys(nodes).sort(), Object.keys(full).sort());
+  for (const id of live.keys()) assert.equal(nodes[id].content, full[id].content, id);
+  for (const word of vocab) {
+    assert.deepEqual(
+      searchNodes(nodes, word, 1000).map(r => r.id).sort(),
+      searchNodes(full, word, 1000).map(r => r.id).sort(),
+      `search "${word}"`
+    );
+  }
+});

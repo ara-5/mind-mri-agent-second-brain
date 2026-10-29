@@ -44,7 +44,7 @@ import { fileURLToPath } from 'url';
 import {
   loadVault, refreshNodes, writeNode, updateNodeFile, deleteNodeFile,
   buildEdges, buildBacklinks, searchNodes, searchNodesWithSemantics, buildContext,
-  parseWikiLinks, parseTags, validateNode,
+  parseWikiLinks, parseTags, validateNode, nameSegmentProblem,
 } from './brain_engine.js';
 import { resolveKeys, MODELS } from '../sdk/models_config.js';
 import { createGitSync } from '../sdk/git_sync.js';
@@ -136,6 +136,13 @@ function publicNode(n) {
   return rest;
 }
 
+const isStr = (v) => typeof v === 'string';
+const isStrArray = (v) => Array.isArray(v) && v.every(isStr);
+
+function validationError(res, details) {
+  return json(res, { error: 'Validation Error', details: Array.isArray(details) ? details : [details] }, 400);
+}
+
 function json(res, data, status = 200) {
   res.writeHead(status, CORS);
   res.end(JSON.stringify(data, null, 2));
@@ -159,12 +166,23 @@ async function readBody(req) {
       body += c;
     });
     req.on('end', () => {
-      try { resolve(JSON.parse(body || '{}')); }
+      let parsed;
+      try { parsed = JSON.parse(body || '{}'); }
       catch {
         const err = new Error('Invalid JSON body');
         err.status = 400;
         reject(err);
+        return;
       }
+      // Every handler reads fields off the body, so it has to be a JSON object
+      // (not null, an array, a number or a string).
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        const err = new Error('JSON body must be an object');
+        err.status = 400;
+        reject(err);
+        return;
+      }
+      resolve(parsed);
     });
     req.on('error', reject);
   });
@@ -390,6 +408,9 @@ async function handleRequest(req, res) {
   // ── Consolidate (POST) ──────────────────────────────────────────────────
   if (method === 'POST' && p === '/consolidate') {
     const body = await readBody(req);
+    const consolidateCheck = validateNode({ agent: body.agent, type: body.type }, true);
+    if (!consolidateCheck.valid) return validationError(res, consolidateCheck.errors);
+    if (body.geminiApiKey !== undefined && !isStr(body.geminiApiKey)) return validationError(res, 'geminiApiKey must be a string.');
     const geminiKey = process.env.GEMINI_API_KEY || body.geminiApiKey || '';
     if (!geminiKey) {
       return json(res, { error: 'Missing Gemini API Key. Provide GEMINI_API_KEY env variable or pass geminiApiKey in body.' }, 400);
@@ -747,6 +768,14 @@ ${memoryText}`;
   if (method === 'POST' && p === '/tasks/submit') {
     const body = await readBody(req);
     if (!body.prompt) return json(res, { error: 'Missing required field: prompt' }, 400);
+    const taskProblems = [];
+    if (!isStr(body.prompt) || body.prompt.length > 100_000) taskProblems.push('prompt must be a string of at most 100000 characters.');
+    if (body.title !== undefined && !isStr(body.title)) taskProblems.push('title must be a string.');
+    if (body.agents !== undefined && !isStrArray(body.agents)) taskProblems.push('agents must be an array of strings.');
+    if (body.dependencies !== undefined && !isStrArray(body.dependencies)) taskProblems.push('dependencies must be an array of strings.');
+    if (body.tags !== undefined && !isStrArray(body.tags)) taskProblems.push('tags must be an array of strings.');
+    if (body.priority !== undefined && !(Number.isInteger(body.priority) && body.priority >= 1 && body.priority <= 10)) taskProblems.push('priority must be an integer between 1 and 10.');
+    if (taskProblems.length) return validationError(res, taskProblems);
     const result = await makeTaskQueue().submit(body.prompt, body.agents || [], {
       title: body.title,
       priority: body.priority,
@@ -765,6 +794,8 @@ ${memoryText}`;
     const id = decodeURIComponent(taskPatchMatch[1]);
     const body = await readBody(req);
     if (!body.status) return json(res, { error: 'Missing required field: status' }, 400);
+    if (!isStr(body.status)) return validationError(res, 'status must be a string.');
+    if (body.content !== undefined && !isStr(body.content)) return validationError(res, 'content must be a string.');
     try {
       const tq = makeTaskQueue();
       await tq.setStatus(id, body.status, body.content !== undefined ? { content: body.content } : {});
@@ -798,6 +829,17 @@ ${memoryText}`;
     if (!body.toAgent || !body.content) {
       return json(res, { error: 'Missing required fields: toAgent, content' }, 400);
     }
+    const msgProblems = [];
+    const toProblem = nameSegmentProblem(body.toAgent, 'toAgent');
+    if (toProblem) msgProblems.push(toProblem);
+    if (body.fromAgent !== undefined && body.fromAgent !== null) {
+      const fromProblem = nameSegmentProblem(body.fromAgent, 'fromAgent');
+      if (fromProblem) msgProblems.push(fromProblem);
+    }
+    if (!isStr(body.content) || body.content.length > 100_000) msgProblems.push('content must be a string of at most 100000 characters.');
+    if (body.subject !== undefined && !isStr(body.subject)) msgProblems.push('subject must be a string.');
+    if (body.taskId !== undefined && !isStr(body.taskId)) msgProblems.push('taskId must be a string.');
+    if (msgProblems.length) return validationError(res, msgProblems);
     const result = await makeMessenger().send(body.fromAgent || 'unknown', body.toAgent, body.content, {
       subject: body.subject,
       taskId:  body.taskId,
