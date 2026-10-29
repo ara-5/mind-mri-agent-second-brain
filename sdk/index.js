@@ -26,6 +26,19 @@
 
 const DEFAULT_API = 'http://localhost:3747';
 
+// Titles become filenames, and the server rejects < > : " / \ | ? * and control
+// characters. Natural titles ("Research: AI Tools", a locale date like 10/29/2026,
+// "Re: hello") contain them, so normalize here instead of failing the write.
+function sanitizeTitle(title) {
+  return String(title)
+    .replace(/[\u0000-\u001f]/g, ' ')
+    .replace(/[<>:"/\\|?*]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const isoDate = () => new Date().toISOString().slice(0, 10);
+
 export class SecondBrain {
   /**
   /**
@@ -141,7 +154,7 @@ export class SecondBrain {
    * Types: 'memory' | 'research' | 'task' | 'insight' | 'decision' | 'note'
    */
   async byType(type) {
-    const result = await this._fetch(`/type/${type}`);
+    const result = await this._fetch(`/type/${encodeURIComponent(type)}`);
     return result?.nodes || [];
   }
 
@@ -193,7 +206,7 @@ export class SecondBrain {
    */
   async remember(content, options = {}) {
     const node = {
-      title:   options.title   || `Memory — ${new Date().toLocaleDateString()}`,
+      title:   sanitizeTitle(options.title || `Memory — ${isoDate()}`) || `Memory — ${isoDate()}`,
       content: typeof content === 'string' ? content : JSON.stringify(content, null, 2),
       type:    options.type    || 'memory',
       tags:    options.tags    || [],
@@ -295,7 +308,7 @@ export class SecondBrain {
     await this.remember(
       `## ${taskName}\n\n**Status:** ✅ Completed\n**Duration:** ${duration}s\n\n${summary}`,
       {
-        title: `✅ ${taskName} — ${new Date().toLocaleDateString()}`,
+        title: `✅ ${taskName} — ${isoDate()}`,
         type:  options.type || 'memory',
         tags:  options.tags || ['completed'],
       }

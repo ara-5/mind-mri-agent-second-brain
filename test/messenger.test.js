@@ -128,6 +128,7 @@ test('reply() sends a new message back to the original sender and marks the orig
   const replyNode = fake.nodes.get(reply.id);
   assert.ok(replyNode.tags.includes('to-pipeline-agent'));
   assert.ok(replyNode.tags.includes('from-research-agent'));
-  assert.match(replyNode.title, /^\[MSG\] Re: Question/);
+  // Titles become filenames, so the SDK normalizes the ":" the real server would reject.
+  assert.match(replyNode.title, /^\[MSG\] Re- Question/);
   assert.ok(replyNode.content.includes(`**Reply-To:** ${original.id}`));
 });

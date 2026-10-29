@@ -20,7 +20,7 @@ const ROOT      = path.resolve(__dirname, '..');
 const PORT      = parseInt(process.env.BRAIN_PORT || '3747', 10);
 // BRAIN_HOST is also the server's bind address; a wildcard bind address
 // (0.0.0.0 / ::) isn't something a client can connect to, so dial loopback.
-const HOST      = ['0.0.0.0', '::', ''].includes(process.env.BRAIN_HOST || '') ? 'localhost' : process.env.BRAIN_HOST;
+const HOST      = ['0.0.0.0', '::', ''].includes(process.env.BRAIN_HOST || '') ? '127.0.0.1' : process.env.BRAIN_HOST;
 const AUTH_KEY  = process.env.BRAIN_KEY || '';
 const BASE      = `http://${HOST}:${PORT}`;
 
@@ -74,6 +74,7 @@ async function ensureServerRunning() {
         env: process.env,
         detached: true,
         stdio: 'ignore',
+        windowsHide: true,
       });
       child.unref();
       for (let i = 0; i < 20; i++) {
@@ -83,7 +84,10 @@ async function ensureServerRunning() {
       return false;
     })();
   }
-  return ensureServerPromise;
+  const up = await ensureServerPromise;
+  // A failed start must not be cached forever: let the next tool call retry.
+  if (!up) ensureServerPromise = null;
+  return up;
 }
 
 // ── Tool definitions ─────────────────────────────────────────────────────────
@@ -109,7 +113,7 @@ const TOOLS = [
   },
   {
     name: 'brain_remember',
-    description: 'Write a new memory/research note into the shared Second Brain vault so future sessions, in this or any other project, can recall it later. Memory hygiene: only call this for a genuine, reusable learning — a fact, pattern, constraint, or decision that will change future behavior or save someone from re-deriving something. Do NOT call it for routine task completions, raw task output, status updates, or anything the task queue already records. Before calling, ask: "would a future session be worse off without this specific note?" — if no, skip it. Prefer updating an existing relevant note over creating a near-duplicate one (see brain_dedup_scan).',
+    description: 'Write a new memory/research note into the shared Second Brain vault so future sessions, in this or any other project, can recall it later. Memory hygiene: only call this for a genuine, reusable learning — a fact, pattern, constraint, or decision that will change future behavior or save someone from re-deriving something. Do NOT call it for routine task completions, raw task output, status updates, or anything the task queue already records. Before calling, ask: "would a future session be worse off without this specific note?" — if no, skip it. Prefer updating an existing relevant note over creating a near-duplicate one (use brain_search first).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -307,6 +311,7 @@ process.stdin.on('data', (chunk) => {
     if (!line) continue;
     let msg;
     try { msg = JSON.parse(line); } catch { log('Failed to parse message:', line); continue; }
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) { log('Ignoring non-object message'); continue; }
     handleMessage(msg);
   }
 });

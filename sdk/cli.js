@@ -90,7 +90,7 @@ async function run() {
       if (res && res.success) {
         console.log(`Memory saved successfully as ID: ${res.id}`);
       } else {
-        console.error(`Failed to save memory.`);
+        console.error('Failed to save memory. Is the server running (npm start) and is BRAIN_KEY set correctly if auth is enabled?');
         process.exit(1);
       }
       break;

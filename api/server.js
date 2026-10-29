@@ -59,6 +59,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Same BRAIN_VAULT override brain_engine.js and sdk/embeddings.js honor, so the
 // archive directory below can't drift from the vault the engine actually reads.
 const VAULT_DIR = process.env.BRAIN_VAULT ? path.resolve(process.env.BRAIN_VAULT) : path.resolve(__dirname, '..', 'vault');
+let PKG_VERSION = 'unknown';
+try { PKG_VERSION = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf8')).version; } catch { /* keep 'unknown' */ }
 const PORT      = parseInt(process.env.BRAIN_PORT || '3747', 10);
 const AUTO_SYNC = process.env.AUTO_GIT_SYNC === 'true';
 // Loopback-only by default; set BRAIN_HOST=0.0.0.0 (and BRAIN_KEY) to expose it.
@@ -335,7 +337,7 @@ async function handleRequest(req, res) {
     return json(res, {
       status:       'ok',
       service:      '🧠 Second Brain API',
-      version:      '1.0.0',
+      version:      PKG_VERSION,
       port:         PORT,
       vault:        './vault', // Relative path to hide absolute local filesystem directories
       nodeCount:    Object.keys(nodes).length,
@@ -921,5 +923,5 @@ server.listen(PORT, HOST, () => {
   console.log('\n  AGENT QUICK START:');
   console.log(`  GET /recall?q=your+topic&hops=1    ← low-token context`);
   console.log(`  POST /remember  { title, content, type, agent }`);
-  console.log('\n  Token savings vs reading source files: 95-99%\n');
+  console.log('\n  Returns only the notes relevant to a query, within a token budget.\n');
 });

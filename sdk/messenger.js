@@ -43,6 +43,8 @@ export class Messenger {
    * @returns {Promise<{id}>}
    */
   async send(fromAgent, toAgent, content, opts = {}) {
+    fromAgent = String(fromAgent ?? 'unknown');
+    toAgent   = String(toAgent);
     const subject  = opts.subject || `Message from ${fromAgent}`;
     const agentSlug = toAgent.toLowerCase().replace(/\s+/g, '-');
 
@@ -59,6 +61,12 @@ export class Messenger {
       tags:    ['message', 'unread', `to-${agentSlug}`, `from-${fromAgent.toLowerCase().replace(/\s+/g, '-')}`],
       subdir:  `messages/${agentSlug}`,
     });
+
+    if (!result?.success) {
+      const err = new Error('Message was not saved: the Second Brain API rejected or could not be reached');
+      err.status = 502;
+      throw err;
+    }
 
     console.log(`[messenger] ${fromAgent} -> ${toAgent}: "${subject}"`);
     return result;

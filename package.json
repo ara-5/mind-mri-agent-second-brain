@@ -7,7 +7,7 @@
   "scripts": {
     "start":  "node api/server.js",
     "dev":    "node --watch api/server.js",
-    "ui":     "start ui/index.html",
+    "ui":     "node sdk/open_ui.js",
     "brain":  "node sdk/cli.js",
     "mcp":    "node mcp/server.js",
     "test":   "node --test test/*.test.js"

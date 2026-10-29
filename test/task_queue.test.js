@@ -158,3 +158,15 @@ test('appendResult and setFinalResult write into the expected markdown sections'
   assert.match(node.content, /### pipeline-agent\nPartial finding\./);
   assert.match(node.content, /## Final Result\nFinal answer\./);
 });
+
+test('submit() throws instead of reporting success when the write fails', async () => {
+  const { TaskQueue } = await import('../sdk/task_queue.js');
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: false, status: 400, json: async () => ({ error: 'Validation Error' }) });
+  try {
+    const tq = new TaskQueue({ api: 'http://localhost:3747' });
+    await assert.rejects(() => tq.submit('do the thing'), /not saved/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

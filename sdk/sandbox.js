@@ -119,24 +119,36 @@ export async function executeCode(code, language, timeoutMs = 5000) {
 
   fs.writeFileSync(hostFilePath, code, 'utf8');
 
+  const containerName = `sandbox_${tempFilename.replace(/[^a-zA-Z0-9_.-]/g, '_')}`;
+
   return new Promise((resolve) => {
     let command = '';
 
     if (isDocker) {
       // Resolve absolute path for Docker volume mounting (converting backslashes to forward slashes for Windows compatibility)
       const absMountSource = path.resolve(WORKSPACE_DIR).replace(/\\/g, '/');
-      const image = language === 'python' ? 'python:3.10-slim' : 'node:18-alpine';
+      const image = language === 'python' ? 'python:3.12-slim' : 'node:22-alpine';
       const execCmd = language === 'python' ? `python /app/${tempFilename}` : `node /app/${tempFilename}`;
 
-      // No network access, memory-capped, auto-removed on exit.
-      command = `docker run --rm --network none -m 128m -v "${absMountSource}:/app" ${image} ${execCmd}`;
+      // No network, memory/CPU/process-capped, no capabilities, read-only root and
+      // code mount, auto-removed on exit. Named so a timeout can force-remove it
+      // (killing the `docker run` client alone leaves the container running).
+      command = `docker run --rm --name ${containerName} --network none -m 128m --cpus 1 --pids-limit 64 ` +
+        `--cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp:rw,size=16m ` +
+        `-v "${absMountSource}:/app:ro" ${image} ${execCmd}`;
     } else {
       // Fallback: run locally via the node/python executable in an isolated cwd with a strict timeout.
       const bin = language === 'python' ? PYTHON_BIN : 'node';
       command = `"${bin}" "${hostFilePath}"`;
     }
 
-    exec(command, { timeout: timeoutMs, cwd: WORKSPACE_DIR }, (error, stdout, stderr) => {
+    // The local fallback must not inherit the server's environment (API keys etc.).
+    const childEnv = isDocker ? process.env : { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot };
+
+    exec(command, { timeout: timeoutMs, cwd: WORKSPACE_DIR, env: childEnv }, (error, stdout, stderr) => {
+      if (isDocker && error && error.killed) {
+        exec(`docker rm -f ${containerName}`, () => {});
+      }
       try {
         if (fs.existsSync(hostFilePath)) fs.unlinkSync(hostFilePath);
       } catch (err) {

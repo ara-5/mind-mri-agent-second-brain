@@ -901,7 +901,8 @@
       return doc.body.innerHTML;
     }
     // Config & Connection state
-    let API_URL = localStorage.getItem('sb_api_url') || 'http://localhost:3747';
+    // Same origin as the page by default (the API server serves this dashboard), so no CORS is needed.
+    let API_URL = localStorage.getItem('sb_api_url') || (location.protocol.startsWith('http') ? location.origin : 'http://localhost:3747');
     let API_KEY = localStorage.getItem('sb_api_key') || '';
     
     document.getElementById('api-url').value = API_URL;

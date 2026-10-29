@@ -84,6 +84,14 @@ export class TaskQueue {
       subdir: 'tasks',
     });
 
+    if (!result?.success) {
+      // brain.remember() swallows transport/validation errors and returns null;
+      // reporting "Submitted" for a task that was never written would lose it silently.
+      const err = new Error('Task was not saved: the Second Brain API rejected or could not be reached');
+      err.status = 502;
+      throw err;
+    }
+
     console.log(`[task-queue] Submitted: "${title}" (${taskId}) -> agents: ${agentList.join(', ')} [${status}]`);
     return { taskId, nodeId: result?.id, status };
   }
