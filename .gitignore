@@ -30,4 +30,17 @@ vault/.embeddings.db
 # Sandboxed code execution scratch space (sdk/sandbox.js)
 sandbox_workspace/
 
+# Notes the running server creates in a clone (agent memories, messages, tasks,
+# archives). This repo only ships the small template vault; your own notes belong
+# in a separate vault (BRAIN_VAULT), never in this repository. Template files that
+# are already tracked stay tracked; use `git add -f` to add a new template note.
+vault/memories/
+vault/memorys/
+vault/messages/
+vault/archive/
+vault/tasks/
+vault/agents/*/
+!vault/agents/personas/
+!vault/agents/sample-agent/
+
 
