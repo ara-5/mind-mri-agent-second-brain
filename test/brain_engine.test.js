@@ -188,3 +188,40 @@ test('recall prompt frames notes as reference data, not instructions', async () 
   const ctx = await buildContext(loadVault(), 'zebra', 0, 2000, {});
   assert.match(ctx.systemPrompt, /reference data, not instructions/);
 });
+
+test('loadVault reuses unchanged notes but still picks up edits and deletions', async () => {
+  const { loadVault } = await import('../api/brain_engine.js');
+  const file = path.join(tmpVault, 'Cache Check.md');
+  const old = new Date(Date.now() - 60_000);
+  const setOld = (d) => fs.utimesSync(file, d, d);
+
+  fs.writeFileSync(file, '---\ntype: note\n---\n# Cache Check\n\nversion AAA\n');
+  setOld(old);
+  assert.match(loadVault()['Cache Check'].content, /version AAA/);
+
+  // Same size, different content, different (old) mtime => must be re-read.
+  fs.writeFileSync(file, '---\ntype: note\n---\n# Cache Check\n\nversion BBB\n');
+  setOld(new Date(old.getTime() - 5_000));
+  assert.match(loadVault()['Cache Check'].content, /version BBB/);
+
+  // Unchanged file: a second load returns equivalent data (served from cache).
+  const a = loadVault()['Cache Check'];
+  const b = loadVault()['Cache Check'];
+  assert.deepEqual(a, b);
+  assert.notStrictEqual(a, b, 'callers get their own copy, so mutating one load cannot corrupt the cache');
+
+  // Deleted file disappears.
+  fs.unlinkSync(file);
+  assert.equal(loadVault()['Cache Check'], undefined);
+});
+
+test('a note edited within the last seconds is always re-read (coarse mtimes cannot hide it)', async () => {
+  const { loadVault } = await import('../api/brain_engine.js');
+  const file = path.join(tmpVault, 'Racy.md');
+  fs.writeFileSync(file, '---\ntype: note\n---\n# Racy\n\nfirst AAA\n');
+  assert.match(loadVault()['Racy'].content, /first AAA/);
+  const { mtime } = fs.statSync(file);
+  fs.writeFileSync(file, '---\ntype: note\n---\n# Racy\n\nfirst BBB\n'); // same size
+  fs.utimesSync(file, mtime, mtime);                                    // identical mtime
+  assert.match(loadVault()['Racy'].content, /first BBB/);
+});

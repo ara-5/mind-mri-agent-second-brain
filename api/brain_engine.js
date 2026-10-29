@@ -137,8 +137,12 @@ export function parseTags(text = '') {
 }
 
 // ── Load ALL .md files from vault recursively ────────────────────────────────
+// path -> { mtimeMs, size, node }: parsed notes reused across loadVault() calls.
+const fileCache = new Map();
+
 export function loadVault() {
   const nodes = {};
+  const seen = new Set();
 
   function walk(dir) {
     if (!fs.existsSync(dir)) return;
@@ -148,6 +152,19 @@ export function loadVault() {
       if (!entry.name.endsWith('.md')) continue;
 
       try {
+        // Reading a file costs ~30x more than stat-ing it, and every write used to
+        // re-read the whole vault (3-7 s per write at 3,000 notes). Reuse the parsed
+        // node when size + mtime are unchanged. A file modified in the last couple of
+        // seconds is always re-read, because coarse filesystem timestamps could
+        // otherwise hide a second same-size edit.
+        const st = fs.statSync(fullPath);
+        seen.add(fullPath);
+        const cached = fileCache.get(fullPath);
+        if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size && Date.now() - st.mtimeMs > 2000) {
+          nodes[cached.node.id] = { ...cached.node };
+          continue;
+        }
+
         const raw       = fs.readFileSync(fullPath, 'utf8');
         const { meta, body } = parseFrontmatter(raw);
         const relPath   = path.relative(VAULT_DIR, fullPath).replace(/\\/g, '/');
@@ -178,6 +195,7 @@ export function loadVault() {
           filePath:  fullPath,
           relPath,
         };
+        fileCache.set(fullPath, { mtimeMs: st.mtimeMs, size: st.size, node: { ...nodes[id] } });
       } catch (e) {
         console.warn(`[brain] Could not read ${fullPath}: ${e.message}`);
       }
@@ -185,6 +203,7 @@ export function loadVault() {
   }
 
   walk(VAULT_DIR);
+  for (const cachedPath of fileCache.keys()) if (!seen.has(cachedPath)) fileCache.delete(cachedPath); // deleted/renamed files
   precomputeSearchIndex(nodes);
   return nodes;
 }
