@@ -13,23 +13,33 @@
 // (AI/LLM providers, cloud, source control, payments, comms, DB URLs, and
 // PEM/JWT formats) so a pasted credential from any common service gets
 // caught, not just the one or two a project happens to use itself.
+// Context-gated keys have no distinctive prefix, so they only match when the
+// provider name appears on the same line, either just before the key
+// (`COHERE_API_KEY=<key>`) or just after it.
+function gatedKey(keyBody, provider) {
+  return new RegExp(
+    `(?:(?<=${provider}[^\\n]{0,30}[=:\\s"'])${keyBody}(?![A-Za-z0-9])|(?<![A-Za-z0-9])${keyBody}(?=[^\\n]{0,20}${provider}))`,
+    'gi'
+  );
+}
+
 const PATTERNS = {
   openaiKey: /\bsk-[a-zA-Z0-9]{48}\b/g,
   openaiProjKey: /\bsk-(?:proj|svcacct)-[a-zA-Z0-9-_]{40,}\b/g,
   anthropicKey: /\bsk-ant-(?:api03|admin01)-[a-zA-Z0-9\-_]{80,}\b/g,
   geminiKey: /\bAIzaSy[a-zA-Z0-9-_]{33}\b/g,
   xaiKey: /\bxai-[a-zA-Z0-9]{40,}\b/g,
-  cohereKey: /\b[a-zA-Z0-9]{40}\b(?=.{0,20}cohere)/gi,
+  cohereKey: gatedKey('[a-zA-Z0-9]{40}', 'cohere'),
   groqKey: /\bgsk_[a-zA-Z0-9]{20,}\b/g,
   huggingfaceToken: /\bhf_[a-zA-Z0-9]{20,}\b/g,
   replicateToken: /\br8_[a-zA-Z0-9]{20,}\b/g,
   perplexityKey: /\bpplx-[a-zA-Z0-9]{20,}\b/g,
-  mistralKey: /\b[a-zA-Z0-9]{32}\b(?=.{0,20}mistral)/gi,
+  mistralKey: gatedKey('[a-zA-Z0-9]{32}', 'mistral'),
   openrouterKey: /\bsk-or-v1-[a-zA-Z0-9]{20,}\b/g,
   togetherKey: /\btgp_v1_[a-zA-Z0-9_-]{20,}\b/g,
-  deepseekKey: /\bsk-[a-zA-Z0-9]{32}\b(?=.{0,20}deepseek)/gi,
+  deepseekKey: gatedKey('sk-[a-zA-Z0-9]{32}', 'deepseek'),
   awsAccessKeyId: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
-  azureKey: /\b[a-zA-Z0-9+/]{88}==\b(?=.{0,20}azure)/gi,
+  azureKey: gatedKey('[a-zA-Z0-9+/]{86}==', 'azure'),
   gcpApiKey: /\bAIza[a-zA-Z0-9_-]{35}\b/g,
   digitaloceanToken: /\bdo[a-z]*_v1_[a-f0-9]{64}\b/g,
   githubToken: /\bgh[pousr]_[a-zA-Z0-9]{36,}\b/g,
@@ -50,7 +60,7 @@ const PATTERNS = {
   privateKeyPem: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY( BLOCK)?-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY( BLOCK)?-----/g,
   jwt: /\beyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b/g,
   ssn: /\b\d{3}-\d{2}-\d{4}\b/g,
-  email: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b/g,
+  email: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
   // Matched separately and validated with a Luhn checksum below — a bare
   // 16-digit regex (the naive approach) flags plenty of non-card numbers
   // (order IDs, hashes, phone sequences) as credit cards.

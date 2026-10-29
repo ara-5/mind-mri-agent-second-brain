@@ -56,7 +56,9 @@ import crypto from 'crypto';
 import { executeCode } from '../sdk/sandbox.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const VAULT_DIR = path.resolve(__dirname, '..', 'vault');
+// Same BRAIN_VAULT override brain_engine.js and sdk/embeddings.js honor, so the
+// archive directory below can't drift from the vault the engine actually reads.
+const VAULT_DIR = process.env.BRAIN_VAULT ? path.resolve(process.env.BRAIN_VAULT) : path.resolve(__dirname, '..', 'vault');
 const PORT      = parseInt(process.env.BRAIN_PORT || '3747', 10);
 const AUTO_SYNC = process.env.AUTO_GIT_SYNC === 'true';
 
@@ -93,9 +95,12 @@ function broadcast(event, data) {
 
 
 // ── HTTP helpers ─────────────────────────────────────────────────────────────
+// Cross-origin browser access is off by default (the bundled UI is same-origin):
+// a wildcard origin would let any web page the user visits call this local API.
+const CORS_ORIGIN = process.env.BRAIN_CORS_ORIGIN || '';
 const CORS = {
   'Content-Type': 'application/json',
-  'Access-Control-Allow-Origin':  '*',
+  ...(CORS_ORIGIN ? { 'Access-Control-Allow-Origin': CORS_ORIGIN, 'Vary': 'Origin' } : {}),
   'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type,Authorization',
 };
@@ -105,10 +110,23 @@ function json(res, data, status = 200) {
   res.end(JSON.stringify(data, null, 2));
 }
 
+const MAX_BODY_BYTES = parseInt(process.env.BRAIN_MAX_BODY_BYTES || String(2 * 1024 * 1024), 10);
+
 async function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', c => body += c);
+    let size = 0;
+    req.on('data', c => {
+      size += c.length;
+      if (size > MAX_BODY_BYTES) {
+        const err = new Error('Request body too large');
+        err.status = 413;
+        reject(err);
+        req.destroy();
+        return;
+      }
+      body += c;
+    });
     req.on('end', () => { try { resolve(JSON.parse(body || '{}')); } catch { resolve({}); } });
     req.on('error', reject);
   });
@@ -116,13 +134,17 @@ async function readBody(req) {
 
 const AUTH_KEY  = process.env.BRAIN_KEY || '';
 
+function safeEqual(a, b) {
+  const x = Buffer.from(String(a)), y = Buffer.from(String(b));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+}
+
 function authenticate(req, res) {
   if (!AUTH_KEY) return true;
   const authHeader = req.headers['authorization'];
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const key = authHeader.substring(7).trim();
-    const a = Buffer.from(key), b = Buffer.from(AUTH_KEY);
-    if (a.length === b.length && crypto.timingSafeEqual(a, b)) return true;
+    if (safeEqual(key, AUTH_KEY)) return true;
   }
   json(res, { error: 'Unauthorized: Invalid or missing API key in Authorization header' }, 401);
   return false;
@@ -200,7 +222,7 @@ async function callGemini(apiKey, prompt) {
 }
 
 // ── Router ───────────────────────────────────────────────────────────────────
-const server = http.createServer(async (req, res) => {
+async function handleRequest(req, res) {
   const url    = new URL(req.url, `http://localhost:${PORT}`);
   const method = req.method.toUpperCase();
   const p      = url.pathname.replace(/\/$/, '') || '/';
@@ -227,7 +249,11 @@ const server = http.createServer(async (req, res) => {
       filePath = path.join(__dirname, '..', 'ui', rel);
     }
 
-    if (fs.existsSync(filePath)) {
+    const uiRoot = path.resolve(__dirname, '..', 'ui');
+    const resolved = path.resolve(filePath);
+    const insideUi = resolved === uiRoot || resolved.startsWith(uiRoot + path.sep);
+    if (insideUi && fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
+      filePath = resolved;
       const ext = path.extname(filePath).toLowerCase();
       let contentType = 'text/html';
       if (ext === '.js') contentType = 'application/javascript';
@@ -236,7 +262,7 @@ const server = http.createServer(async (req, res) => {
 
       res.writeHead(200, {
         'Content-Type': contentType,
-        'Access-Control-Allow-Origin': '*',
+        ...(CORS_ORIGIN ? { 'Access-Control-Allow-Origin': CORS_ORIGIN } : {}),
       });
       fs.createReadStream(filePath).pipe(res);
       return;
@@ -248,7 +274,7 @@ const server = http.createServer(async (req, res) => {
     // Authenticate SSE connections via query token parameter if AUTH_KEY is configured
     if (AUTH_KEY) {
       const token = url.searchParams.get('token') || '';
-      if (token !== AUTH_KEY) {
+      if (!safeEqual(token, AUTH_KEY)) {
         res.writeHead(401, CORS);
         res.end(JSON.stringify({ error: 'Unauthorized: Invalid token in query string' }));
         return;
@@ -258,7 +284,7 @@ const server = http.createServer(async (req, res) => {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
+      ...(CORS_ORIGIN ? { 'Access-Control-Allow-Origin': CORS_ORIGIN } : {}),
       'Access-Control-Allow-Headers': 'Content-Type,Authorization'
     });
     res.write(`event: ping\ndata: ${JSON.stringify({ connected: true })}\n\n`);
@@ -818,6 +844,17 @@ ${memoryText}`;
   }
 
   return json(res, { error: 'Not found', path: p }, 404);
+}
+
+const server = http.createServer((req, res) => {
+  handleRequest(req, res).catch((err) => {
+    // One bad request must never take the whole API down (an unhandled
+    // rejection terminates the process on modern Node).
+    const status = err && err.status ? err.status : 500;
+    if (status === 500) console.error('[server] Unhandled request error:', err);
+    if (!res.headersSent) json(res, { error: status === 500 ? 'Internal server error' : err.message }, status);
+    else res.end();
+  });
 });
 
 // ── Boot ─────────────────────────────────────────────────────────────────────

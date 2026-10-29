@@ -77,3 +77,32 @@ test('is a no-op on non-string input', () => {
   assert.equal(sanitizeContent(undefined), undefined);
   assert.equal(sanitizeContent(42), 42);
 });
+
+test('email redaction does not treat "|" as a valid TLD character', () => {
+  assert.equal(sanitizeContent('a@b.c|d'), 'a@b.c|d');
+  assert.match(sanitizeContent('mail me: dev@example.technology now'), /\[REDACTED_EMAIL\]/);
+});
+
+test('redacts provider-gated keys when the provider name precedes the key', () => {
+  const cohere = 'a1B2c3D4e5'.repeat(4);
+  assert.ok(!sanitizeContent(`COHERE_API_KEY=${cohere}`).includes(cohere));
+  const mistral = 'Zy9Xw8Vu7T'.repeat(3) + 'ab';
+  assert.ok(!sanitizeContent(`MISTRAL_API_KEY: "${mistral}"`).includes(mistral));
+  const deepseek = 'sk-' + 'q1w2e3r4t5'.repeat(3) + 'zx';
+  assert.ok(!sanitizeContent(`deepseek key ${deepseek}`).includes(deepseek));
+});
+
+test('redacts provider-gated keys when the provider name follows the key', () => {
+  const mistral = 'Zy9Xw8Vu7T'.repeat(3) + 'ab';
+  assert.ok(!sanitizeContent(`${mistral} (mistral)`).includes(mistral));
+});
+
+test('does not redact a 32-char token that has no provider context', () => {
+  const t = 'Zy9Xw8Vu7T'.repeat(3) + 'ab';
+  assert.equal(sanitizeContent(`id ${t} done`), `id ${t} done`);
+});
+
+test('redacts an Azure key when "azure" precedes it', () => {
+  const k = 'A'.repeat(86) + '==';
+  assert.ok(!sanitizeContent(`AZURE_OPENAI_KEY=${k}`).includes(k));
+});
