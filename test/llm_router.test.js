@@ -123,3 +123,19 @@ test('activeProvider reports the first configured provider in priority order', (
 test('activeProvider falls back to ollama when no keys are configured', () => {
   assert.equal(activeProvider({}), 'ollama');
 });
+
+test('Gemini API key is sent in a header, never in the request URL', async (t) => {
+  const seen = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url: String(url), headers: init?.headers || {} });
+    return fakeResponse({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  await routeLLM({ geminiKey: 'SECRET-GEMINI-KEY' }, 'system', 'user', {});
+
+  assert.equal(seen.length, 1);
+  assert.ok(!seen[0].url.includes('SECRET-GEMINI-KEY'), 'key must not appear in the URL');
+  assert.equal(seen[0].headers['x-goog-api-key'], 'SECRET-GEMINI-KEY');
+});

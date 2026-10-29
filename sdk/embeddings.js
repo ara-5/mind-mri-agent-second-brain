@@ -53,15 +53,19 @@ function decodeVector(buf) {
   return Array.from(new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4));
 }
 
+// A stalled provider must not hang memory writes or searches indefinitely.
+const EMBED_TIMEOUT_MS = 30_000;
+
 // ── Call Gemini Embedding API ───────────────────────────────────────────────
 async function callGeminiEmbedding(apiKey, text) {
   const model = MODELS.gemini.embeddingModel;
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
       body: JSON.stringify({ model: `models/${model}`, content: { parts: [{ text }] } }),
+      signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
     }
   );
   const d = await res.json();
@@ -80,6 +84,7 @@ async function callOpenAIEmbedding(apiKey, text) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
     body: JSON.stringify({ input: text, model: modelName }),
+    signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
   });
   const d = await res.json();
   if (d.error) throw new Error(d.error.message);

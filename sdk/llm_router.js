@@ -167,10 +167,11 @@ async function callGemini(apiKey, systemPrompt, userPrompt, { json = false, maxT
   if (json) generationConfig.responseMimeType = 'application/json';
 
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // Key goes in a header, not the query string, so it can't leak via URLs in logs/errors.
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
       body: JSON.stringify({
         contents: [{ parts: [{ text: `${systemPrompt}\n\nUser request:\n${userPrompt}` }] }],
         generationConfig,
