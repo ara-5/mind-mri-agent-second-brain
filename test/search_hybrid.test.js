@@ -49,3 +49,20 @@ test('searchNodesWithSemantics surfaces a semantically-close node via the embedd
   const ids = results.map(r => r.id);
   assert.ok(ids.includes('beta'), 'the semantically-close node should surface purely from the embeddings arm');
 });
+
+test('an identical query reuses its embedding instead of calling the provider again', async (t) => {
+  const nodes = loadVault();
+  saveEmbeddingsCache({
+    alpha: { hash: 'h1', vector: [0, 1, 0], updatedAt: '' },
+    beta:  { hash: 'h2', vector: [1, 0, 0], updatedAt: '' },
+  });
+  let calls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { calls++; return { json: async () => ({ data: [{ embedding: [1, 0, 0] }] }) }; };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const q = 'a distinctive cache-test query';
+  await searchNodesWithSemantics(nodes, q, 10, { openaiKey: 'test-key' });
+  await searchNodesWithSemantics(nodes, q, 10, { openaiKey: 'test-key' });
+  assert.equal(calls, 1, 'the second identical query must be served from the embedding cache');
+});
