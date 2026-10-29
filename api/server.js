@@ -46,7 +46,7 @@ import {
   buildEdges, buildBacklinks, searchNodes, searchNodesWithSemantics, buildContext,
   parseWikiLinks, parseTags, validateNode,
 } from './brain_engine.js';
-import { resolveKeys } from '../sdk/models_config.js';
+import { resolveKeys, MODELS } from '../sdk/models_config.js';
 import { createGitSync } from '../sdk/git_sync.js';
 import { TaskQueue } from '../sdk/task_queue.js';
 import { Messenger } from '../sdk/messenger.js';
@@ -61,6 +61,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VAULT_DIR = process.env.BRAIN_VAULT ? path.resolve(process.env.BRAIN_VAULT) : path.resolve(__dirname, '..', 'vault');
 const PORT      = parseInt(process.env.BRAIN_PORT || '3747', 10);
 const AUTO_SYNC = process.env.AUTO_GIT_SYNC === 'true';
+// Loopback-only by default; set BRAIN_HOST=0.0.0.0 (and BRAIN_KEY) to expose it.
+const HOST      = process.env.BRAIN_HOST || '127.0.0.1';
+// Address this process uses to call its own REST API (task queue / messenger):
+// a wildcard bind address isn't dialable, so use loopback in that case.
+const SELF_HOST = ['0.0.0.0', '::', ''].includes(HOST) ? '127.0.0.1' : HOST;
+const SELF_API  = `http://${SELF_HOST.includes(':') ? `[${SELF_HOST}]` : SELF_HOST}:${PORT}`;
 
 // ── In-memory cache (reloaded on vault change) ───────────────────────────────
 let nodes = {};
@@ -73,11 +79,20 @@ function reload() {
 }
 
 // Watch vault folder for changes (Obsidian edits reload automatically)
-fs.watch(VAULT_DIR, { recursive: true }, (event, filename) => {
-  if (filename?.endsWith('.md')) {
-    setTimeout(reload, 300); // debounce
-  }
-});
+// A configured BRAIN_VAULT may not exist yet; fs.watch would throw ENOENT at startup.
+fs.mkdirSync(VAULT_DIR, { recursive: true });
+let reloadTimer = null;
+try {
+  const watcher = fs.watch(VAULT_DIR, { recursive: true }, (event, filename) => {
+    if (filename?.endsWith('.md')) {
+      clearTimeout(reloadTimer); // real debounce: one reload per burst of events
+      reloadTimer = setTimeout(reload, 300);
+    }
+  });
+  watcher.on('error', (e) => console.warn(`[brain] Vault watcher stopped: ${e.message} (use POST /reload)`));
+} catch (e) {
+  console.warn(`[brain] Could not watch the vault for changes: ${e.message} (use POST /reload)`);
+}
 
 let sseClients = [];
 
@@ -105,6 +120,14 @@ const CORS = {
   'Access-Control-Allow-Headers': 'Content-Type,Authorization',
 };
 
+// Node objects carry the absolute on-disk path; the API deliberately hides the
+// vault location (see /health), so strip it from anything sent to a client.
+function publicNode(n) {
+  if (!n || typeof n !== 'object') return n;
+  const { filePath, ...rest } = n;
+  return rest;
+}
+
 function json(res, data, status = 200) {
   res.writeHead(status, CORS);
   res.end(JSON.stringify(data, null, 2));
@@ -127,7 +150,14 @@ async function readBody(req) {
       }
       body += c;
     });
-    req.on('end', () => { try { resolve(JSON.parse(body || '{}')); } catch { resolve({}); } });
+    req.on('end', () => {
+      try { resolve(JSON.parse(body || '{}')); }
+      catch {
+        const err = new Error('Invalid JSON body');
+        err.status = 400;
+        reject(err);
+      }
+    });
     req.on('error', reject);
   });
 }
@@ -167,10 +197,10 @@ const { gitSync, toVaultRelativePath } = createGitSync(VAULT_DIR, {
 // directly, so a fresh instance per call is cheap and keeps them decoupled
 // from this file's in-memory `nodes` cache.
 function makeTaskQueue() {
-  return new TaskQueue({ apiKey: AUTH_KEY, api: `http://localhost:${PORT}`, silent: false });
+  return new TaskQueue({ apiKey: AUTH_KEY, api: SELF_API, silent: false });
 }
 function makeMessenger() {
-  return new Messenger({ apiKey: AUTH_KEY, api: `http://localhost:${PORT}`, silent: false });
+  return new Messenger({ apiKey: AUTH_KEY, api: SELF_API, silent: false });
 }
 
 async function callGemini(apiKey, prompt) {
@@ -191,13 +221,16 @@ async function callGemini(apiKey, prompt) {
       }
     });
     
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODELS.gemini.model}:generateContent`;
     
     const req = https.request(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-      }
+        // Header, not ?key=, so the key never lands in URLs/logs.
+        'x-goog-api-key': apiKey,
+      },
+      timeout: 60_000,
     }, (res) => {
       let body = '';
       res.on('data', chunk => body += chunk);
@@ -216,6 +249,7 @@ async function callGemini(apiKey, prompt) {
     });
     
     req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('Gemini request timed out')));
     req.write(payload);
     req.end();
   });
@@ -409,7 +443,10 @@ ${memoryText}`;
           meta: { type: 'archive' }
         });
 
-        const newPath = path.join(archiveDir, path.basename(oldNode.filePath));
+        // Never overwrite an earlier archived note that has the same filename.
+        const baseName = path.basename(oldNode.filePath, '.md');
+        let newPath = path.join(archiveDir, `${baseName}.md`);
+        for (let n = 2; fs.existsSync(newPath); n++) newPath = path.join(archiveDir, `${baseName} (${n}).md`);
         changedPaths.push(toVaultRelativePath(oldNode.filePath), toVaultRelativePath(newPath));
         fs.renameSync(oldNode.filePath, newPath);
 
@@ -426,7 +463,7 @@ ${memoryText}`;
       // Broadcast remember event for the new consolidated thought
       broadcast('remember', {
         id: newId,
-        node: nodes[newId],
+        node: publicNode(nodes[newId]),
         timestamp: new Date().toISOString()
       });
 
@@ -436,7 +473,7 @@ ${memoryText}`;
       return json(res, {
         success: true,
         consolidatedCount: targetNodes.length,
-        newNode: nodes[newId],
+        newNode: publicNode(nodes[newId]),
         id: newId
       }, 201);
     } catch (err) {
@@ -463,7 +500,7 @@ ${memoryText}`;
     if (!node) return json(res, { error: 'Node not found', id }, 404);
     const bl   = buildBacklinks(nodes);
     return json(res, {
-      ...node,
+      ...publicNode(node),
       outLinks: parseWikiLinks(node.content)
         .map(t => Object.values(nodes).find(n => n.title.toLowerCase() === t.toLowerCase()))
         .filter(Boolean).map(n => ({ id: n.id, title: n.title, type: n.type })),
@@ -502,6 +539,7 @@ ${memoryText}`;
     // Update lastAccessedAt for nodes retrieved in context
     const today = new Date().toISOString().split('T')[0];
     for (const node of context.nodes) {
+      if (nodes[node.id]?.lastAccessedAt === today) continue;
       updateNodeFile(node.filePath, {
         meta: { lastAccessedAt: today }
       });
@@ -517,7 +555,7 @@ ${memoryText}`;
       timestamp: new Date().toISOString()
     });
 
-    return json(res, context);
+    return json(res, { ...context, nodes: context.nodes.map(publicNode) });
   }
 
   // ── Graph ─────────────────────────────────────────────────────────────
@@ -615,12 +653,12 @@ ${memoryText}`;
     
     broadcast('remember', {
       id,
-      node: nodes[id] || node,
+      node: publicNode(nodes[id] || node),
       timestamp: new Date().toISOString()
     });
 
     gitSync(`remember memory: "${node.title}" by ${node.agent}`, nodes[id] ? [toVaultRelativePath(nodes[id].filePath)] : []);
-    return json(res, { success: true, id, node: nodes[id] || node }, 201);
+    return json(res, { success: true, id, node: publicNode(nodes[id] || node) }, 201);
   }
 
   // ── Update (PATCH) ────────────────────────────────────────────────────
@@ -667,7 +705,7 @@ ${memoryText}`;
 
       broadcast('update', {
         id,
-        node: nodes[id],
+        node: publicNode(nodes[id]),
         timestamp: new Date().toISOString()
       });
 
@@ -789,7 +827,7 @@ ${memoryText}`;
   if (method === 'POST' && p === '/dedup/scan') {
     const body = await readBody(req);
     const dryRun = body.dryRun !== false;
-    const keys = resolveKeys(body);
+    const keys = resolveKeys({ ...body, ollamaHost: undefined, ollamaModel: undefined });
     const candidates = await scanForDuplicates(nodes, {
       embeddingKeys: keys,
       llmKeys: keys,
@@ -809,7 +847,9 @@ ${memoryText}`;
     if (!['python', 'javascript'].includes(body.language)) {
       return json(res, { error: 'language must be "python" or "javascript"' }, 400);
     }
-    const result = await executeCode(body.code, body.language, body.timeoutMs || 5000);
+    const requested = Number(body.timeoutMs);
+    const timeoutMs = Number.isFinite(requested) ? Math.min(Math.max(requested, 100), 30000) : 5000;
+    const result = await executeCode(String(body.code), body.language, timeoutMs);
     return json(res, result);
   }
 
@@ -821,7 +861,7 @@ ${memoryText}`;
   // GEMINI_API_KEY, or the optional local model) to do anything.
   if (method === 'POST' && p === '/embeddings/reindex') {
     const body = await readBody(req);
-    const keys = resolveKeys(body);
+    const keys = resolveKeys({ ...body, ollamaHost: undefined, ollamaModel: undefined });
     (async () => {
       const allNodes = Object.values(nodes).filter(n => n.type !== 'archive');
       console.log(`[embeddings] Starting batch semantic reindexing for ${allNodes.length} nodes...`);
@@ -838,7 +878,7 @@ ${memoryText}`;
       version:    '1.0',
       exportedAt: new Date().toISOString(),
       nodeCount:  Object.keys(nodes).length,
-      nodes:      Object.values(nodes),
+      nodes:      Object.values(nodes).map(publicNode),
       edges:      buildEdges(nodes),
     });
   }
@@ -850,9 +890,9 @@ const server = http.createServer((req, res) => {
   handleRequest(req, res).catch((err) => {
     // One bad request must never take the whole API down (an unhandled
     // rejection terminates the process on modern Node).
-    const status = err && err.status ? err.status : 500;
+    const status = err && err.status ? err.status : (err instanceof URIError || err?.code === 'ERR_INVALID_URL' ? 400 : 500);
     if (status === 500) console.error('[server] Unhandled request error:', err);
-    if (!res.headersSent) json(res, { error: status === 500 ? 'Internal server error' : err.message }, status);
+    if (!res.headersSent) json(res, { error: status === 500 ? 'Internal server error' : (status === 400 && !err.status ? 'Malformed URL' : err.message) }, status);
     else res.end();
   });
 });
@@ -860,16 +900,21 @@ const server = http.createServer((req, res) => {
 // ── Boot ─────────────────────────────────────────────────────────────────────
 reload();
 
-// Loopback-only by default; set BRAIN_HOST=0.0.0.0 (and BRAIN_KEY) to expose it.
-const HOST = process.env.BRAIN_HOST || '127.0.0.1';
 if (HOST !== '127.0.0.1' && HOST !== 'localhost' && !AUTH_KEY) {
   console.warn(`[security] Binding to ${HOST} with no BRAIN_KEY set: all endpoints, including /sandbox/execute, are unauthenticated.`);
 }
 
+server.on('error', (err) => {
+  console.error(err.code === 'EADDRINUSE'
+    ? `[brain] Port ${PORT} is already in use. Set BRAIN_PORT to another port or stop the other process.`
+    : `[brain] Server error: ${err.message}`);
+  process.exit(1);
+});
+
 server.listen(PORT, HOST, () => {
   console.log('\n' + '═'.repeat(58));
   console.log('  🧠  SECOND BRAIN API');
-  console.log(`  📡  http://localhost:${PORT}`);
+  console.log(`  📡  http://${HOST}:${PORT}`);
   console.log(`  💾  Vault: ${VAULT_DIR}`);
   console.log(`  📝  ${Object.keys(nodes).length} nodes loaded`);
   console.log('═'.repeat(58));

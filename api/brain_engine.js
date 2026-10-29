@@ -244,8 +244,13 @@ export function updateNodeFile(filePath, patch) {
   // unconditionally therefore prepended a second, duplicate heading on every
   // metadata-only update (e.g. /recall's passive lastAccessedAt touch) —
   // strip the old leading heading before reassembling.
+  //
+  // Only strip a first line that really IS this note's own "# <title>" heading.
+  // A blanket `^#...` strip also deleted legitimate first lines such as
+  // "## Overview" or "#decision chose B" (hand-written Obsidian notes, or
+  // PATCH content that starts with a heading/tag), and the passive
+  // lastAccessedAt touch in /recall runs this on every recalled note.
   let cleanContent = newContent.trim();
-  cleanContent = cleanContent.replace(/^#[^\n]*\r?\n+/, '').trim();
 
   // A node's real displayed heading can differ from its filename (special
   // characters get sanitized out of filenames, or the file simply predates
@@ -257,6 +262,14 @@ export function updateNodeFile(filePath, patch) {
   const existingHeadingMatch = body.match(/^\s*#[ \t]+([^\n]+)/);
   const existingHeading = existingHeadingMatch ? existingHeadingMatch[1].trim() : path.basename(filePath, '.md');
   const newTitle   = patch.title || existingHeading;
+
+  const leadingHeading = cleanContent.match(/^#[ \t]+([^\n]*?)[ \t]*(?:\r?\n+|$)/);
+  if (leadingHeading) {
+    const known = [existingHeading, newTitle, path.basename(filePath, '.md')].map(t => t.toLowerCase());
+    if (known.includes(leadingHeading[1].trim().toLowerCase())) {
+      cleanContent = cleanContent.slice(leadingHeading[0].length).trim();
+    }
+  }
 
   // Determine if it was an actual user write/edit (content, title, or core meta changes)
   const isActualEdit = (patch.title && patch.title !== path.basename(filePath, '.md')) ||

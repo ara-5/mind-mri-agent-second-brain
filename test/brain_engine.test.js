@@ -119,3 +119,20 @@ test('parseWikiLinks resolves alias, heading, path and .md link forms to the not
     ['Plain', 'Note', 'Other', 'Deep Note', 'File']
   );
 });
+
+test('updateNodeFile never deletes a first body line that is not the note\'s own title heading', async () => {
+  const { loadVault } = await import('../api/brain_engine.js');
+  // A hand-written Obsidian-style note: no "# Title" line, starts with a section heading and a tag line.
+  const filePath = path.join(tmpVault, 'Hand Written.md');
+  fs.writeFileSync(filePath, '---\ntype: note\nimportance: 5\n---\n## Overview\nKeep this line.\n\n#todo remember me\n');
+
+  // A passive metadata-only touch (what /recall does) must not eat "## Overview".
+  updateNodeFile(filePath, { meta: { lastAccessedAt: '2026-10-29' } });
+  assert.match(fs.readFileSync(filePath, 'utf8'), /## Overview/);
+
+  // Replacing content whose first line is a hashtag or section heading must keep it.
+  updateNodeFile(filePath, { content: '#decision chose option B\nbecause of cost' });
+  const after = fs.readFileSync(filePath, 'utf8');
+  assert.match(after, /#decision chose option B/);
+  assert.ok(loadVault()['Hand Written']);
+});
