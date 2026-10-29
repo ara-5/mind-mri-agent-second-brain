@@ -15,18 +15,18 @@
  * ══════════════════════════════════════════════════════════════
  */
 import path from 'path';
-import { exec as defaultExec } from 'child_process';
+import { execFile as defaultExecFile } from 'child_process';
 
 /**
  * @param {string} vaultDir - absolute path to the vault folder
  * @param {object} [options]
  * @param {boolean} [options.enabled] - if false, gitSync() is a no-op (matches AUTO_GIT_SYNC)
- * @param {Function} [options.exec] - injectable in place of child_process.exec, for tests
+ * @param {Function} [options.execFile] - injectable in place of child_process.execFile, for tests
  * @param {Function} [options.onError] - (err, command) => void, called when a sync fails
  * @param {Function} [options.onSuccess] - (message) => void, called when a sync succeeds
  */
 export function createGitSync(vaultDir, options = {}) {
-  const runExec = options.exec || defaultExec;
+  const runExecFile = options.execFile || defaultExecFile;
   const enabled = options.enabled ?? true;
   let busy = false;
   let queued = null; // { message, paths: Set<string> } | null
@@ -44,13 +44,27 @@ export function createGitSync(vaultDir, options = {}) {
     // in here — it's gitignored (regenerable from vault content), so
     // there's nothing to stage for it even if a caller asked.
     const addTargets = paths.length
-      ? paths.map(p => `"${path.posix.join(vaultFolderName, p)}"`).join(' ')
-      : `"${vaultFolderName}"`;
-    const command = `git pull origin main && git add ${addTargets} && git commit -m "${message.replace(/"/g, '\\"')}" && git push origin main`;
+      ? paths.map(p => path.posix.join(vaultFolderName, p))
+      : [vaultFolderName];
+    // Each step is its own argv-style git invocation (no shell), because the
+    // commit message and file names carry agent-controlled text (node titles,
+    // task prompts) that a shell would otherwise interpret (`$(...)`, backticks).
+    const steps = [
+      ['pull', 'origin', 'main'],
+      ['add', '--', ...addTargets],
+      ['commit', '-m', message],
+      ['push', 'origin', 'main'],
+    ];
+    const command = steps.map(a => ['git', ...a].join(' ')).join(' && ');
     const projectRoot = path.resolve(vaultDir, '..');
 
+    function runSteps(i, cb) {
+      if (i >= steps.length) return cb(null);
+      runExecFile('git', steps[i], { cwd: projectRoot }, (err) => (err ? cb(err) : runSteps(i + 1, cb)));
+    }
+
     return new Promise((resolve) => {
-      runExec(command, { cwd: projectRoot }, (err) => {
+      runSteps(0, (err) => {
         busy = false;
         if (err) options.onError?.(err, command);
         else options.onSuccess?.(message);

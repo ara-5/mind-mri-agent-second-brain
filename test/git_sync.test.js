@@ -93,3 +93,20 @@ test('gitSync is a no-op when disabled', () => {
   const result = gitSync('should not run', ['never-synced.md']);
   assert.equal(result, undefined);
 });
+
+test('gitSync does not execute shell metacharacters in the commit message or file names', async () => {
+  const { workDir, vaultDir } = initRepoWithRemote();
+  const { gitSync } = createGitSync(vaultDir, { enabled: true });
+  const marker = path.join(workDir, 'pwned.txt');
+
+  const fileName = 'note $(echo x).md';
+  fs.writeFileSync(path.join(vaultDir, fileName), '# n\n');
+  const message = `task: "$(node -e \\"require('fs').writeFileSync('pwned.txt','x')\\")" \`touch pwned.txt\` ; touch pwned.txt`;
+
+  const result = await gitSync(message, [fileName]);
+  assert.equal(result.error, null, `sync should succeed: ${result.error}`);
+  assert.ok(!fs.existsSync(marker), 'message text must never be executed by a shell');
+
+  const log = execSync('git log -1 --format=%B', { cwd: workDir }).toString();
+  assert.ok(log.includes('touch pwned.txt'), 'the message should be committed verbatim');
+});
