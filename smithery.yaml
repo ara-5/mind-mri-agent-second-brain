@@ -1,0 +1,20 @@
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      vault:
+        type: string
+        description: Folder holding the markdown vault (optional).
+      port:
+        type: number
+        description: Port for the local API server (default 3747).
+  commandFunction: |-
+    (config) => ({
+      command: 'node',
+      args: ['mcp/server.js'],
+      env: {
+        ...(config.vault ? { BRAIN_VAULT: config.vault } : {}),
+        ...(config.port ? { BRAIN_PORT: String(config.port) } : {}),
+      },
+    })

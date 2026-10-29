@@ -24,6 +24,7 @@
  *   GET  /tasks?status=...              → list tasks
  *   PATCH /tasks/:id                    → update a task's status
  *   POST /messages/send                 → send an agent-to-agent message
+ *   POST /messages/read                 → mark a message read ({ id })
  *   GET  /messages/:agent?unread=false  → read an agent's inbox
  *   GET  /org-chart                     → department/lead structure from persona tags
  *   POST /dedup/scan                    → report near-duplicate node candidates
@@ -388,6 +389,7 @@ async function handleRequest(req, res) {
         'GET  /tasks',
         'PATCH /tasks/:id',
         'POST /messages/send',
+        'POST /messages/read',
         'GET  /messages/:agent',
         'GET  /org-chart',
         'POST /dedup/scan',
@@ -847,6 +849,16 @@ ${memoryText}`;
     gitSync(`message: ${body.fromAgent || 'unknown'} -> ${body.toAgent}`,
       result?.id && nodes[result.id] ? [toVaultRelativePath(nodes[result.id].filePath)] : []);
     return json(res, { success: true, id: result?.id }, 201);
+  }
+
+  // ── Messages: mark read (POST) ────────────────────────────────────────────
+  if (method === 'POST' && p === '/messages/read') {
+    const body = await readBody(req);
+    if (!isStr(body.id) || !body.id) return validationError(res, 'id must be a non-empty string.');
+    const msg = nodes[body.id];
+    if (!msg || msg.type !== 'message') return json(res, { error: `Message not found: ${body.id}` }, 404);
+    await makeMessenger().markRead(body.id);
+    return json(res, { success: true, id: body.id });
   }
 
   // ── Messages: inbox (GET) ─────────────────────────────────────────────────

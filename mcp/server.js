@@ -10,7 +10,9 @@
  * ══════════════════════════════════════════════════════════════
  */
 
+import fs from 'fs';
 import http from 'http';
+import os from 'os';
 import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -62,6 +64,20 @@ function checkHealth() {
   return request('GET', '/health').then(() => true).catch(() => false);
 }
 
+// When installed from npm (npx / node_modules) the package directory is a cache
+// that gets replaced on upgrade, so the default ./vault inside it would lose the
+// user's notes. Keep the data under the home directory unless told otherwise.
+function serverEnv() {
+  const env = { ...process.env };
+  const installed = ROOT.split(path.sep).some((seg) => seg === 'node_modules' || seg === '_npx');
+  if (installed) {
+    const home = path.join(os.homedir(), '.second-brain');
+    env.BRAIN_VAULT = env.BRAIN_VAULT || path.join(home, 'vault');
+    env.SANDBOX_WORKSPACE = env.SANDBOX_WORKSPACE || path.join(home, 'sandbox_workspace');
+  }
+  return env;
+}
+
 let ensureServerPromise = null;
 async function ensureServerRunning() {
   if (await checkHealth()) return true;
@@ -71,7 +87,7 @@ async function ensureServerRunning() {
       log(`Server not reachable at ${BASE} — starting "node api/server.js" in ${ROOT}...`);
       const child = spawn(process.execPath, ['api/server.js'], {
         cwd: ROOT,
-        env: process.env,
+        env: serverEnv(),
         detached: true,
         stdio: 'ignore',
         windowsHide: true,
@@ -213,6 +229,16 @@ const TOOLS = [
       request('GET', `/messages/${encodeURIComponent(agent)}${unread === false ? '?unread=false' : ''}`),
   },
   {
+    name: 'brain_messages_mark_read',
+    description: 'Mark a message as read so it no longer appears in the unread inbox. Pass the message node id returned by brain_messages_get.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'Message node id, e.g. "messages/qa-agent/[MSG] Question"' } },
+      required: ['id'],
+    },
+    handler: ({ id }) => request('POST', '/messages/read', { id }),
+  },
+  {
     name: 'brain_health',
     description: 'Check whether the Second Brain server is up and get vault stats (node/edge counts).',
     inputSchema: { type: 'object', properties: {} },
@@ -221,6 +247,23 @@ const TOOLS = [
 ];
 
 const TOOLS_BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
+
+// MCP tool annotations: clients use these to decide when to ask for permission.
+// Nothing here deletes or overwrites existing notes (writes always create new
+// ones), so no tool is destructive; the vault is the only thing touched.
+const READ_ONLY = new Set(['brain_recall', 'brain_search', 'brain_node_get', 'brain_tasks_list', 'brain_messages_get', 'brain_health']);
+function annotationsFor(name) {
+  const readOnly = READ_ONLY.has(name);
+  return {
+    readOnlyHint: readOnly,
+    destructiveHint: false,
+    idempotentHint: readOnly || name === 'brain_messages_mark_read',
+    openWorldHint: false,
+  };
+}
+
+let PKG_VERSION = '0.0.0';
+try { PKG_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version; } catch { /* keep default */ }
 
 // ── Minimal MCP JSON-RPC over stdio ──────────────────────────────────────────
 function send(msg) {
@@ -245,7 +288,7 @@ async function handleMessage(msg) {
         replyResult(id, {
           protocolVersion: params?.protocolVersion || '2024-11-05',
           capabilities: { tools: {} },
-          serverInfo: { name: 'second-brain', version: '1.1.0' },
+          serverInfo: { name: 'second-brain', version: PKG_VERSION },
         });
         return;
 
@@ -259,7 +302,9 @@ async function handleMessage(msg) {
 
       case 'tools/list':
         replyResult(id, {
-          tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
+          tools: TOOLS.map(({ name, description, inputSchema }) => ({
+            name, description, inputSchema, annotations: annotationsFor(name),
+          })),
         });
         return;
 

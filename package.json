@@ -1,9 +1,32 @@
 {
-  "name": "second-brain",
+  "name": "mind-mri-second-brain",
+  "mcpName": "io.github.ara-5/second-brain",
   "license": "SEE LICENSE IN LICENSE",
-  "version": "1.1.0",
-  "description": "Universal offline-first AI agent second brain — Obsidian vault + knowledge graph + agent memory API",
+  "version": "1.5.0",
+  "description": "Zero-dependency Graph-RAG second brain for AI agents: a markdown/Obsidian vault with wikilink graph search, shared memory, task queue and messaging, exposed as an MCP server, REST API and CLI.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ara-5/mind-mri-agent-second-brain.git"
+  },
+  "homepage": "https://github.com/ara-5/mind-mri-agent-second-brain#readme",
+  "bugs": {
+    "url": "https://github.com/ara-5/mind-mri-agent-second-brain/issues"
+  },
+  "keywords": ["mcp", "model-context-protocol", "memory", "second-brain", "obsidian", "graph-rag", "rag", "ai-agents", "knowledge-graph"],
+  "bin": {
+    "mind-mri-second-brain": "mcp/server.js",
+    "second-brain": "sdk/cli.js"
+  },
+  "files": [
+    "api/",
+    "sdk/",
+    "mcp/",
+    "ui/",
+    "migrations/",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "start":  "node api/server.js",
     "dev":    "node --watch api/server.js",

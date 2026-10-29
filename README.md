@@ -168,7 +168,38 @@ npm run brain -- org-chart
 
 ### MCP Server
 
-`mcp/server.js` is a zero-dependency, stdio JSON-RPC MCP server exposing this repo's REST API as MCP tools (`brain_recall`, `brain_remember`, `brain_search`, `brain_node_get`, `brain_tasks_submit`, `brain_tasks_list`, `brain_messages_send`, `brain_messages_get`, `brain_health`). It auto-spawns `api/server.js` on first tool call if the API isn't already running, so an MCP client only needs to point at `node mcp/server.js` — no separate server-start step. Configure it in an MCP-aware client the same way you'd configure any other stdio MCP server, pointing its command at `node mcp/server.js` from this repo's root (set `BRAIN_KEY`/`BRAIN_PORT` in its environment if your instance uses them).
+`mcp/server.js` is a zero-dependency, stdio MCP server that gives any MCP client (Claude Desktop, Claude Code, Cursor, …) a shared, persistent memory. It needs Node 22.5 or newer.
+
+**Install** — add this to your client's MCP config (for example `claude_desktop_config.json`, or `.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "second-brain": {
+      "command": "npx",
+      "args": ["-y", "mind-mri-second-brain"]
+    }
+  }
+}
+```
+
+For Claude Code: `claude mcp add second-brain -- npx -y mind-mri-second-brain`.
+
+Running from a clone instead? Use `"command": "node", "args": ["/path/to/repo/mcp/server.js"]`.
+
+**First run.** On the first tool call the MCP server starts the local API (`api/server.js`, bound to `127.0.0.1` only) in the background and keeps it running. Notes are plain markdown files: `~/.second-brain/vault` when installed from npm, or `./vault` in a clone. Override with `BRAIN_VAULT`. Optional: `BRAIN_PORT` (default 3747) and `BRAIN_KEY` (require a Bearer token).
+
+| Tool | Purpose | Writes? |
+|---|---|---|
+| `brain_recall` | Graph-RAG context for a query (wikilink hops, token budget) | no |
+| `brain_search` | Ranked keyword (+ semantic, if configured) search | no |
+| `brain_node_get` | One note with its outlinks and backlinks | no |
+| `brain_remember` | Save a new note (creates a new file; never overwrites) | yes |
+| `brain_tasks_submit` / `brain_tasks_list` | Shared markdown task queue | submit |
+| `brain_messages_send` / `brain_messages_get` / `brain_messages_mark_read` | Agent-to-agent inboxes | send, mark read |
+| `brain_health` | Server and vault stats | no |
+
+Read-only tools carry the MCP `readOnlyHint` annotation, and none are marked destructive.
 
 ---
 
