@@ -54,6 +54,7 @@ export class SecondBrain {
     this.apiKey    = options.apiKey || process.env.BRAIN_KEY || '';
     this.silent    = options.silent || false;
     this._alive    = null; // cached liveness check
+    this.lastError = null; // message of the most recent failed request
   }
 
   _log(...args) {
@@ -80,8 +81,13 @@ export class SecondBrain {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || `HTTP ${res.status}`);
       }
-      return await res.json();
+      const data = await res.json();
+      this.lastError = null;
+      return data;
     } catch (e) {
+      // Kept so callers that run silently (the CLI) can still say why a call
+      // came back empty instead of reporting "0 results".
+      this.lastError = e.message;
       if (!this.silent) console.warn(`[brain] Unavailable: ${e.message}`);
       return null;
     }

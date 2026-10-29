@@ -27,6 +27,27 @@ function flag(name, fallback = undefined) {
   return found ? found.slice(prefix.length) : fallback;
 }
 
+// Parses an integer flag; exits with a clear message instead of sending NaN.
+function intFlag(name, fallback) {
+  const raw = flag(name);
+  if (raw === undefined) return fallback;
+  const n = Number(raw);
+  if (raw.trim() === '' || !Number.isInteger(n) || n < 0) {
+    console.error(`Error: --${name} must be a non-negative integer (got "${raw}").`);
+    process.exit(1);
+  }
+  return n;
+}
+
+// For read commands: a null answer from an unreachable or rejecting server must
+// not be reported as "0 results".
+function failIfError(what) {
+  if (brain.lastError) {
+    console.error(`Error: ${what} failed: ${brain.lastError}`);
+    process.exit(1);
+  }
+}
+
 async function run() {
   switch (command) {
     case 'status': {
@@ -50,9 +71,10 @@ async function run() {
         console.error('Error: Missing query string for recall. Usage: brain recall "<query>" [--hops=1] [--tokens=2000]');
         process.exit(1);
       }
-      const hops = parseInt(flag('hops', '1'), 10);
-      const maxTokens = parseInt(flag('tokens', '2000'), 10);
+      const hops = intFlag('hops', 1);
+      const maxTokens = intFlag('tokens', 2000);
       const ctx = await brain.recall(query, hops, maxTokens);
+      failIfError('recall');
       console.log(ctx.systemPrompt || '(No relevant context found)');
       break;
     }
@@ -63,11 +85,12 @@ async function run() {
         console.error('Error: Missing search term. Usage: brain search "<term>" [--limit=5]');
         process.exit(1);
       }
-      const limit = parseInt(flag('limit', '5'), 10);
+      const limit = intFlag('limit', 5);
       const results = await brain.search(searchQ, limit);
+      failIfError('search');
       console.log(`Found ${results.length} nodes:\n`);
       results.forEach(n => {
-        console.log(`- [${n.type.toUpperCase()}] ${n.title} (score: ${n.score.toFixed(2)})`);
+        console.log(`- [${n.type.toUpperCase()}] ${n.title} (score: ${(n.score ?? 0).toFixed(2)})`);
         console.log(`  "${n.preview}"\n`);
       });
       break;
@@ -90,7 +113,7 @@ async function run() {
       if (res && res.success) {
         console.log(`Memory saved successfully as ID: ${res.id}`);
       } else {
-        console.error('Failed to save memory. Is the server running (npm start) and is BRAIN_KEY set correctly if auth is enabled?');
+        console.error(`Failed to save memory: ${brain.lastError || 'unknown error'}. Is the server running (npm start) and is BRAIN_KEY set correctly if auth is enabled?`);
         process.exit(1);
       }
       break;
@@ -106,14 +129,14 @@ async function run() {
           process.exit(1);
         }
         const agents = flag('agents', '').split(',').map(a => a.trim()).filter(Boolean);
-        const priority = flag('priority') ? parseInt(flag('priority'), 10) : undefined;
+        const priority = intFlag('priority', undefined);
         const result = await tq.submit(prompt, agents, { priority });
         console.log(JSON.stringify(result, null, 2));
       } else if (sub === 'list' || !sub) {
         const status = flag('status', null);
         const tasks = await tq.list(status);
         console.log(`Found ${tasks.length} task(s):\n`);
-        tasks.forEach(t => console.log(`- [${t.tags.join(', ')}] ${t.title} (${t.id})`));
+        tasks.forEach(t => console.log(`- [${(t.tags || []).join(', ')}] ${t.title} (${t.id})`));
       } else {
         console.error(`Unknown tasks subcommand: ${sub}. Usage: brain tasks submit|list`);
         process.exit(1);
@@ -142,7 +165,7 @@ async function run() {
         const unreadOnly = !args.includes('--all');
         const messages = await msgr.inbox(agentName, unreadOnly);
         console.log(`Found ${messages.length} message(s) for ${agentName}:\n`);
-        messages.forEach(m => console.log(`- ${m.title} [${m.tags.join(', ')}]`));
+        messages.forEach(m => console.log(`- ${m.title} [${(m.tags || []).join(', ')}]`));
       } else {
         console.error(`Unknown messages subcommand: ${sub}. Usage: brain messages send|inbox`);
         process.exit(1);
@@ -152,7 +175,7 @@ async function run() {
 
     case 'org-chart': {
       const chart = await brain._fetch('/org-chart');
-      if (!chart) { console.error('Could not reach Second Brain API.'); process.exit(1); }
+      if (!chart) { console.error(`Could not reach Second Brain API${brain.lastError ? `: ${brain.lastError}` : ''}.`); process.exit(1); }
       console.log(`${chart.departmentCount} department(s):\n`);
       for (const dept of chart.departments || []) {
         console.log(`${dept.department} (${dept.memberCount} member(s))`);
@@ -189,4 +212,9 @@ function printHelp() {
   console.log(`  npm run brain -- recall "API schema design"`);
 }
 
-run();
+// Task/message clients throw on server errors (bad input, auth, unreachable);
+// print them plainly rather than as an unhandled rejection with a stack trace.
+run().catch((err) => {
+  console.error(`Error: ${err.message}`);
+  process.exit(1);
+});

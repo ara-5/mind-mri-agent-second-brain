@@ -264,10 +264,21 @@ async function handleMessage(msg) {
         return;
 
       case 'tools/call': {
-        const { name, arguments: args = {} } = params || {};
+        const { name, arguments: rawArgs } = params || {};
+        const args = rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs) ? rawArgs : {};
         const tool = TOOLS_BY_NAME.get(name);
         if (!tool) {
           replyError(id, -32602, `Unknown tool: ${name}`);
+          return;
+        }
+        // Without this a missing `query` or `id` would be sent as the literal
+        // string "undefined" (URLSearchParams / encodeURIComponent stringify it).
+        const missing = (tool.inputSchema.required || []).filter((k) => args[k] === undefined || args[k] === null);
+        if (missing.length) {
+          replyResult(id, {
+            content: [{ type: 'text', text: `Error: missing required argument(s): ${missing.join(', ')}` }],
+            isError: true,
+          });
           return;
         }
         const up = await ensureServerRunning();
