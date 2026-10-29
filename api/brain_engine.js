@@ -19,6 +19,46 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VAULT_DIR = process.env.BRAIN_VAULT ? path.resolve(process.env.BRAIN_VAULT) : path.resolve(__dirname, '..', 'vault');
 
 // ── YAML frontmatter parser (simple, no deps) ────────────────────────────────
+// Scalars that would not survive a plain `key: value` round-trip (numeric-
+// looking strings, quotes, brackets, newlines, edge whitespace) are written as
+// JSON double-quoted strings; the parser reads those back verbatim, with no
+// number coercion. Files written by older versions (unquoted) still parse.
+function needsQuoting(str) {
+  return str === '' || /^\s|\s$|[\r\n"]|^['\[]/.test(str) || (!isNaN(Number(str)) && Number.isInteger(Number(str)));
+}
+function formatScalar(v) {
+  if (typeof v !== 'string') return String(v);
+  return needsQuoting(v) ? JSON.stringify(v) : v;
+}
+function formatArrayItem(v) {
+  const str = String(v);
+  return str === '' || /[,\[\]"\r\n]|^\s|\s$|^'/.test(str) ? JSON.stringify(str) : str;
+}
+
+function parseScalar(raw) {
+  if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+    try { return JSON.parse(raw); } catch { /* fall through to legacy handling */ }
+  }
+  return raw.replace(/^['"]|['"]$/g, '');
+}
+
+function splitArrayItems(inner) {
+  const items = [];
+  let cur = '', inQuote = false;
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (inQuote) {
+      cur += ch;
+      if (ch === '\\') cur += inner[++i] ?? '';
+      else if (ch === '"') inQuote = false;
+    } else if (ch === '"' && cur.trim() === '') { inQuote = true; cur += ch; }
+    else if (ch === ',') { items.push(cur); cur = ''; }
+    else cur += ch;
+  }
+  items.push(cur);
+  return items.map(i => i.trim()).filter((i, idx, arr) => i !== '' || arr.length > 1);
+}
+
 function parseFrontmatter(content) {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!match) return { meta: {}, body: content };
@@ -30,11 +70,14 @@ function parseFrontmatter(content) {
     const colonIdx = line.indexOf(':');
     if (colonIdx === -1) continue;
     let key = line.slice(0, colonIdx).trim().replace(/^['"]|['"]$/g, '');
-    let val = line.slice(colonIdx + 1).trim().replace(/^['"]|['"]$/g, '');
+    let val = line.slice(colonIdx + 1).trim();
     // Parse arrays: [a, b, c]
     if (val.startsWith('[') && val.endsWith(']')) {
-      val = val.slice(1, -1).split(',').map(s => s.trim().replace(/^['"]|['"]$/g, ''));
+      val = splitArrayItems(val.slice(1, -1)).map(parseScalar);
+    } else if (val.length >= 2 && val.startsWith('"') && val.endsWith('"')) {
+      val = parseScalar(val); // double-quoted: always a string, never coerced
     } else {
+      val = parseScalar(val);
       const num = Number(val);
       if (val !== '' && !isNaN(num) && Number.isInteger(num)) {
         val = num;
@@ -48,8 +91,8 @@ function parseFrontmatter(content) {
 function buildFrontmatter(meta) {
   const lines = ['---'];
   for (const [k, v] of Object.entries(meta)) {
-    if (Array.isArray(v)) lines.push(`${k}: [${v.join(', ')}]`);
-    else                   lines.push(`${k}: ${v}`);
+    if (Array.isArray(v)) lines.push(`${k}: [${v.map(formatArrayItem).join(', ')}]`);
+    else                   lines.push(`${k}: ${formatScalar(v)}`);
   }
   lines.push('---');
   return lines.join('\n') + '\n';

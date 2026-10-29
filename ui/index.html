@@ -878,6 +878,28 @@
   <script src="htm.min.js"></script>
 
   <script>
+    // Notes are agent- and user-supplied text: everything interpolated into
+    // innerHTML below goes through escapeHtml(), and rendered markdown through
+    // sanitizeHtml(), so a note can never inject script into this dashboard
+    // (which shares an origin with the full API).
+    function escapeHtml(v) {
+      return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+    function sanitizeHtml(html) {
+      const doc = new DOMParser().parseFromString(String(html ?? ''), 'text/html');
+      doc.querySelectorAll('script,style,iframe,frame,object,embed,link,meta,base,form,svg,math').forEach(el => el.remove());
+      doc.body.querySelectorAll('*').forEach(el => {
+        for (const attr of [...el.attributes]) {
+          const name = attr.name.toLowerCase();
+          const val = attr.value.replace(/[\s\u0000-\u001f]/g, '').toLowerCase();
+          if (name.startsWith('on') || name === 'style' || name === 'srcdoc' ||
+              (['href', 'src', 'xlink:href', 'action', 'formaction'].includes(name) && /^(javascript|data|vbscript):/.test(val))) {
+            el.removeAttribute(attr.name);
+          }
+        }
+      });
+      return doc.body.innerHTML;
+    }
     // Config & Connection state
     let API_URL = localStorage.getItem('sb_api_url') || 'http://localhost:3747';
     let API_KEY = localStorage.getItem('sb_api_key') || '';
@@ -935,7 +957,7 @@
       eventSource.addEventListener('recall', (e) => {
         try {
           const data = JSON.parse(e.data);
-          addTelemetryFeed('recall', `🤖 <strong>${data.agent}</strong> recalled: "${data.query}" (${data.nodes.length} nodes)`);
+          addTelemetryFeed('recall', `🤖 <strong>${escapeHtml(data.agent)}</strong> recalled: "${escapeHtml(data.query)}" (${data.nodes.length} nodes)`);
           pulseNodes(data.nodes.map(n => n.id), 'var(--color-research)');
           
           // Draw connection path highlight
@@ -948,7 +970,7 @@
       eventSource.addEventListener('remember', (e) => {
         try {
           const data = JSON.parse(e.data);
-          addTelemetryFeed('remember', `📝 New Memory: "<strong>${data.node.title}</strong>" by ${data.node.agent}`);
+          addTelemetryFeed('remember', `📝 New Memory: "<strong>${escapeHtml(data.node.title)}</strong>" by ${escapeHtml(data.node.agent)}`);
           fetchGraph().then(() => {
             setTimeout(() => pulseNodes([data.id], 'var(--color-memory)'), 400);
           });
@@ -960,7 +982,7 @@
       eventSource.addEventListener('update', (e) => {
         try {
           const data = JSON.parse(e.data);
-          addTelemetryFeed('update', `✏️ Updated thought: "<strong>${data.node.title}</strong>"`);
+          addTelemetryFeed('update', `✏️ Updated thought: "<strong>${escapeHtml(data.node.title)}</strong>"`);
           fetchGraph().then(() => {
             setTimeout(() => pulseNodes([data.id], 'var(--color-decision)'), 400);
           });
@@ -972,7 +994,7 @@
       eventSource.addEventListener('delete', (e) => {
         try {
           const data = JSON.parse(e.data);
-          addTelemetryFeed('delete', `🗑️ Forgotten node: "<strong>${data.title}</strong>"`);
+          addTelemetryFeed('delete', `🗑️ Forgotten node: "<strong>${escapeHtml(data.title)}</strong>"`);
           fetchGraph();
         } catch (err) {
           console.error('[sse] Failed to parse delete event:', err);
@@ -1296,7 +1318,7 @@
       // Node hover micro-animations
       node.on('mouseover', (event, d) => {
         tooltip.style.opacity = 1;
-        tooltip.innerHTML = `<strong>${d.title}</strong><br><span style="font-size:0.75rem; text-transform:uppercase; color:${getColorForType(d.type)}">${d.type}</span>`;
+        tooltip.innerHTML = `<strong>${escapeHtml(d.title)}</strong><br><span style="font-size:0.75rem; text-transform:uppercase; color:${getColorForType(d.type)}">${escapeHtml(d.type)}</span>`;
         
         // Highlight neighbors
         link.classed('highlighted', l => l.source.id === d.id || l.target.id === d.id);
@@ -1389,7 +1411,7 @@
         
         let tagsHtml = '';
         if (node.tags && node.tags.length) {
-          tagsHtml = `<div class="tag-container">${node.tags.map(t => `<span class="tag-pill">#${t}</span>`).join('')}</div>`;
+          tagsHtml = `<div class="tag-container">${node.tags.map(t => `<span class="tag-pill">#${escapeHtml(t)}</span>`).join('')}</div>`;
         }
 
         let outLinksHtml = '<p style="color:var(--text-muted); font-size:0.85rem;">None</p>';
@@ -1397,12 +1419,12 @@
           outLinksHtml = `
             <div class="node-links-list">
               ${node.outLinks.map(l => `
-                <div class="link-badge" onclick="navigateToNode('${l.id}')">
+                <div class="link-badge" data-node-id="${escapeHtml(l.id)}" onclick="navigateToNode(this.dataset.nodeId)">
                   <div class="link-badge-left">
                     <span class="legend-color" style="width:8px; height:8px; background-color:${getColorForType(l.type)}"></span>
-                    <span class="link-badge-title">${l.title}</span>
+                    <span class="link-badge-title">${escapeHtml(l.title)}</span>
                   </div>
-                  <span style="font-size:0.7rem; color:var(--text-muted); text-transform:uppercase;">${l.type}</span>
+                  <span style="font-size:0.7rem; color:var(--text-muted); text-transform:uppercase;">${escapeHtml(l.type)}</span>
                 </div>
               `).join('')}
             </div>
@@ -1414,27 +1436,27 @@
           inLinksHtml = `
             <div class="node-links-list">
               ${node.inLinks.map(l => `
-                <div class="link-badge" onclick="navigateToNode('${l.id}')">
+                <div class="link-badge" data-node-id="${escapeHtml(l.id)}" onclick="navigateToNode(this.dataset.nodeId)">
                   <div class="link-badge-left">
                     <span class="legend-color" style="width:8px; height:8px; background-color:${getColorForType(l.type)}"></span>
-                    <span class="link-badge-title">${l.title}</span>
+                    <span class="link-badge-title">${escapeHtml(l.title)}</span>
                   </div>
-                  <span style="font-size:0.7rem; color:var(--text-muted); text-transform:uppercase;">${l.type}</span>
+                  <span style="font-size:0.7rem; color:var(--text-muted); text-transform:uppercase;">${escapeHtml(l.type)}</span>
                 </div>
               `).join('')}
             </div>
           `;
         }
 
-        const htmlContent = marked.parse(node.content || '');
+        const htmlContent = sanitizeHtml(marked.parse(node.content || ''));
 
         detailsPanel.innerHTML = `
           <div class="details-header">
             <div class="details-title-area">
-              <h2>${node.title}</h2>
+              <h2>${escapeHtml(node.title)}</h2>
               <div>
-                <span class="meta-badge" style="background-color:${typeColor}; color:#090d16;">${node.type}</span>
-                <span style="font-size:0.8rem; color:var(--text-muted)">Agent: ${node.agent || 'human'} · ${node.createdAt || ''}</span>
+                <span class="meta-badge" style="background-color:${typeColor}; color:#090d16;">${escapeHtml(node.type)}</span>
+                <span style="font-size:0.8rem; color:var(--text-muted)">Agent: ${escapeHtml(node.agent || 'human')} · ${escapeHtml(node.createdAt || '')}</span>
               </div>
               ${tagsHtml}
             </div>
@@ -1461,7 +1483,7 @@
             <button class="close-btn" onclick="closeDetailsPanel()">&times;</button>
           </div>
           <div class="details-body">
-            <p>Could not load node "${nodeId}". It might have been deleted.</p>
+            <p>Could not load node "${escapeHtml(nodeId)}". It might have been deleted.</p>
           </div>
         `;
       }

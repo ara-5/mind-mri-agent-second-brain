@@ -18,7 +18,9 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT      = path.resolve(__dirname, '..');
 const PORT      = parseInt(process.env.BRAIN_PORT || '3747', 10);
-const HOST      = process.env.BRAIN_HOST || 'localhost';
+// BRAIN_HOST is also the server's bind address; a wildcard bind address
+// (0.0.0.0 / ::) isn't something a client can connect to, so dial loopback.
+const HOST      = ['0.0.0.0', '::', ''].includes(process.env.BRAIN_HOST || '') ? 'localhost' : process.env.BRAIN_HOST;
 const AUTH_KEY  = process.env.BRAIN_KEY || '';
 const BASE      = `http://${HOST}:${PORT}`;
 

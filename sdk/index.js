@@ -55,6 +55,8 @@ export class SecondBrain {
         headers['Authorization'] = `Bearer ${this.apiKey}`;
       }
       const res = await fetch(`${this.apiUrl}${path}`, {
+        // Bounded wait: a hung server must not hang the calling agent forever.
+        signal: AbortSignal.timeout(30_000),
         ...options,
         headers: {
           ...headers,

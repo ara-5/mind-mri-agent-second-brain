@@ -92,6 +92,16 @@ export async function executeCode(code, language, timeoutMs = 5000) {
   const runner = isDocker ? 'docker' : 'local-child-process';
 
   if (!isDocker) {
+    // A keyword blacklist is not a security boundary (string concatenation,
+    // aliasing, etc. bypass it), so the local fallback is opt-in only.
+    if (process.env.SANDBOX_ALLOW_LOCAL !== '1') {
+      return {
+        success: false,
+        stdout: '',
+        stderr: 'Sandbox unavailable: Docker is not running. The unisolated local fallback is disabled by default; set SANDBOX_ALLOW_LOCAL=1 to enable it ONLY in a trusted environment.',
+        runner,
+      };
+    }
     const check = isCodeSafe(code, language);
     if (!check.safe) {
       return {
