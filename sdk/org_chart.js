@@ -70,11 +70,32 @@ function buildDepartmentHierarchy(members) {
   const childrenOf = new Map();
   const topLevel = [];
 
+  // Resolve each member's manager first, then break any reportsTo cycle
+  // (A -> B -> A, or longer): a cycle has no top-level entry point, so every
+  // member in it used to vanish from the chart. The first member of the cycle
+  // (in input order) is promoted to top level instead.
+  const managerOf = new Map();
   for (const member of members) {
     const managerTitle = member.reportsTo ? member.reportsTo.toLowerCase() : null;
     const manager = managerTitle && managerTitle !== member.title.toLowerCase()
       ? byTitleLower.get(managerTitle)
       : null;
+    if (manager) managerOf.set(member.id, manager);
+  }
+  const resolved = new Set();
+  for (const member of members) {
+    const path = new Set();
+    let cur = member;
+    while (cur && !resolved.has(cur.id)) {
+      if (path.has(cur.id)) { managerOf.delete(cur.id); break; } // closes a cycle
+      path.add(cur.id);
+      cur = managerOf.get(cur.id);
+    }
+    for (const id of path) resolved.add(id);
+  }
+
+  for (const member of members) {
+    const manager = managerOf.get(member.id);
     if (manager) {
       if (!childrenOf.has(manager.id)) childrenOf.set(manager.id, []);
       childrenOf.get(manager.id).push(member);

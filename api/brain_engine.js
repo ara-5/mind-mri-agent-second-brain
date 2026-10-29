@@ -110,7 +110,14 @@ export function parseWikiLinks(text = '') {
   const cleanText = stripCodeBlocks(text);
   const links = [], re = /\[\[([^\]]+)\]\]/g;
   let m;
-  while ((m = re.exec(cleanText)) !== null) links.push(m[1].trim());
+  while ((m = re.exec(cleanText)) !== null) {
+    // Obsidian link forms: [[Note]], [[Note|alias]], [[Note#Heading]],
+    // [[folder/Note]], [[Note.md]] — all resolve to the note's title.
+    const target = m[1].split('|')[0].split('#')[0].trim()
+      .replace(/\.md$/i, '')
+      .split('/').pop().trim();
+    if (target) links.push(target);
+  }
   return [...new Set(links)];
 }
 
@@ -679,7 +686,9 @@ export async function buildContext(nodes, query, hops = 1, maxTokens = 2000, key
     if (!node) continue;
 
     const est = Math.ceil(node.content.length / 4);
-    if (tokens + est > maxTokens && result.length > 0) break;
+    // Skip a note that doesn't fit rather than abandoning the whole traversal,
+    // so smaller, still-relevant notes further down the queue can use the budget.
+    if (tokens + est > maxTokens && result.length > 0) continue;
     result.push({ ...node, hop });
     tokens += est;
 

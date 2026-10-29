@@ -111,3 +111,11 @@ test('validateNode rejects control characters in a title', () => {
   assert.equal(validateNode({ title: 'a\nb' }).valid, false);
   assert.equal(validateNode({ title: 'fine title' }).valid, true);
 });
+
+test('parseWikiLinks resolves alias, heading, path and .md link forms to the note title', async () => {
+  const { parseWikiLinks } = await import('../api/brain_engine.js');
+  assert.deepEqual(
+    parseWikiLinks('[[Plain]] [[Note|shown text]] [[Other#Section]] [[agents/x/Deep Note]] [[File.md]] [[Plain]] `[[in code]]`'),
+    ['Plain', 'Note', 'Other', 'Deep Note', 'File']
+  );
+});

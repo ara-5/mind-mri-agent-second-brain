@@ -120,3 +120,17 @@ test('buildOrgChart leaves everyone top-level when no reportsTo is set', () => {
   const sales = chart.departments.find(d => d.department === 'Sales');
   assert.equal(sales.members.length, 2);
 });
+
+test('buildOrgChart keeps members of a reportsTo cycle instead of dropping them', async () => {
+  const { buildOrgChart } = await import('../sdk/org_chart.js');
+  const entries = [
+    { id: 'a', title: 'Alice', tags: ['engineering'], reportsTo: 'Bob' },
+    { id: 'b', title: 'Bob', tags: ['engineering'], reportsTo: 'Alice' },
+    { id: 'c', title: 'Cara', tags: ['engineering'], reportsTo: 'Alice' },
+  ];
+  const chart = buildOrgChart(entries);
+  const flat = [];
+  const walk = (ms) => ms.forEach(m => { flat.push(m.id); walk(m.reports); });
+  walk(chart.departments[0].members);
+  assert.deepEqual(flat.sort(), ['a', 'b', 'c']);
+});
