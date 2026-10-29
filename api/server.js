@@ -52,6 +52,7 @@ import { TaskQueue } from '../sdk/task_queue.js';
 import { Messenger } from '../sdk/messenger.js';
 import { buildOrgChart } from '../sdk/org_chart.js';
 import { scanForDuplicates } from '../sdk/dedup.js';
+import crypto from 'crypto';
 import { executeCode } from '../sdk/sandbox.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -120,7 +121,8 @@ function authenticate(req, res) {
   const authHeader = req.headers['authorization'];
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const key = authHeader.substring(7).trim();
-    if (key === AUTH_KEY) return true;
+    const a = Buffer.from(key), b = Buffer.from(AUTH_KEY);
+    if (a.length === b.length && crypto.timingSafeEqual(a, b)) return true;
   }
   json(res, { error: 'Unauthorized: Invalid or missing API key in Authorization header' }, 401);
   return false;
@@ -821,7 +823,13 @@ ${memoryText}`;
 // ── Boot ─────────────────────────────────────────────────────────────────────
 reload();
 
-server.listen(PORT, () => {
+// Loopback-only by default; set BRAIN_HOST=0.0.0.0 (and BRAIN_KEY) to expose it.
+const HOST = process.env.BRAIN_HOST || '127.0.0.1';
+if (HOST !== '127.0.0.1' && HOST !== 'localhost' && !AUTH_KEY) {
+  console.warn(`[security] Binding to ${HOST} with no BRAIN_KEY set: all endpoints, including /sandbox/execute, are unauthenticated.`);
+}
+
+server.listen(PORT, HOST, () => {
   console.log('\n' + '═'.repeat(58));
   console.log('  🧠  SECOND BRAIN API');
   console.log(`  📡  http://localhost:${PORT}`);
