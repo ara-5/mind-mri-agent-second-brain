@@ -57,18 +57,29 @@ const PYTHON_BIN = detectPythonBin();
 const DOCKER_PROBE_TIMEOUT_MS = 8000;
 const DOCKER_CACHE_UP_MS = 30_000;
 const DOCKER_CACHE_DOWN_MS = 5_000;
-let dockerProbe = { at: 0, up: false };
+let dockerProbe = { at: 0, up: false, reason: '' };
 
 export function isDockerRunning() {
   const age = Date.now() - dockerProbe.at;
   if (dockerProbe.at && age < (dockerProbe.up ? DOCKER_CACHE_UP_MS : DOCKER_CACHE_DOWN_MS)) return dockerProbe.up;
   let up = false;
+  let reason = '';
   try {
     execSync('docker info', { stdio: 'ignore', timeout: DOCKER_PROBE_TIMEOUT_MS });
     up = true;
-  } catch { /* not installed, not running, or not responding */ }
-  dockerProbe = { at: Date.now(), up };
+  } catch (err) {
+    // Not installed, daemon stopped, or too slow to answer: say which.
+    reason = err.code === 'ETIMEDOUT' ? `"docker info" did not answer within ${DOCKER_PROBE_TIMEOUT_MS}ms`
+      : err.code === 'ENOENT' ? '"docker" was not found on PATH'
+      : `"docker info" failed (${err.code || (err.status != null ? `exit ${err.status}` : err.signal || 'unknown')})`;
+  }
+  dockerProbe = { at: Date.now(), up, reason };
   return up;
+}
+
+/** Why the last Docker probe failed ('' if it succeeded or has not run). */
+export function dockerUnavailableReason() {
+  return dockerProbe.reason;
 }
 
 function isCodeSafe(code, language) {
@@ -116,7 +127,7 @@ export async function executeCode(code, language, timeoutMs = 5000) {
       return {
         success: false,
         stdout: '',
-        stderr: 'Sandbox unavailable: Docker is not running. The unisolated local fallback is disabled by default; set SANDBOX_ALLOW_LOCAL=1 to enable it ONLY in a trusted environment.',
+        stderr: `Sandbox unavailable: Docker is not running (${dockerUnavailableReason() || 'unknown reason'}). The unisolated local fallback is disabled by default; set SANDBOX_ALLOW_LOCAL=1 to enable it ONLY in a trusted environment.`,
         runner,
       };
     }

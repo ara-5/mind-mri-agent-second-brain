@@ -7,13 +7,14 @@ import { spawnSync } from 'child_process';
 
 process.env.SANDBOX_WORKSPACE = fs.mkdtempSync(path.join(os.tmpdir(), 'second-brain-sandbox-test-'));
 process.on('exit', () => { try { fs.rmSync(process.env.SANDBOX_WORKSPACE, { recursive: true, force: true }); } catch { /* best effort */ } });
-const { executeCode, isDockerRunning } = await import('../sdk/sandbox.js');
+const { executeCode, isDockerRunning, dockerUnavailableReason } = await import('../sdk/sandbox.js');
 
 test('local fallback is refused unless SANDBOX_ALLOW_LOCAL=1', { skip: isDockerRunning() }, async () => {
   delete process.env.SANDBOX_ALLOW_LOCAL;
   const res = await executeCode('console.log("hi")', 'javascript');
   assert.equal(res.success, false);
   assert.match(res.stderr, /SANDBOX_ALLOW_LOCAL/);
+  assert.match(res.stderr, /Docker is not running \([^)]+\)/, 'the refusal says why Docker was judged unavailable');
 });
 
 test('local fallback runs when explicitly enabled', { skip: isDockerRunning() }, async () => {
@@ -29,7 +30,10 @@ test('local fallback runs when explicitly enabled', { skip: isDockerRunning() },
 // triggers a surprise download (CI pulls it in a prior step).
 const IMAGE = 'node:22-alpine';
 const dockerReady = isDockerRunning() && spawnSync('docker', ['image', 'inspect', IMAGE], { stdio: 'ignore' }).status === 0;
-const dockerOpts = { skip: !dockerReady && `Docker daemon or ${IMAGE} not available`, timeout: 60_000 };
+const dockerOpts = {
+  skip: !dockerReady && `Docker daemon or ${IMAGE} not available (${dockerUnavailableReason() || 'image missing'})`,
+  timeout: 60_000,
+};
 
 test('docker: runs JavaScript in a container and returns its output', dockerOpts, async () => {
   const res = await executeCode('console.log("hi from container")', 'javascript', 20_000);
