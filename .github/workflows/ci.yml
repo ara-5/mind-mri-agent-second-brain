@@ -24,6 +24,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+      - name: Pull the sandbox image so the Docker tests run for real
+        run: docker pull -q node:22-alpine
       - name: Run test suite (zero dependencies — no install step needed)
         run: npm test
       - name: Sanity-check every module parses (syntax check)

@@ -24,6 +24,11 @@ const WORKSPACE_DIR = process.env.SANDBOX_WORKSPACE
 if (!fs.existsSync(WORKSPACE_DIR)) {
   fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
 }
+// The container runs with every capability dropped, so root inside it is subject
+// to normal file permissions: a private (0700) workspace, such as one made by
+// mkdtemp, would make the mounted script unreadable ("Cannot find module").
+// The folder only ever holds the snippet being run. No-op on Windows.
+try { fs.chmodSync(WORKSPACE_DIR, 0o755); } catch { /* not ours to change, or unsupported */ }
 
 /**
  * Detect the available Python binary on this system.
@@ -44,13 +49,26 @@ const PYTHON_BIN = detectPythonBin();
 /**
  * Check if the Docker daemon is running and responsive.
  */
+// `docker info` can take a couple of seconds on a busy machine. A timeout that was
+// too short made a healthy daemon look absent, which refuses the run (or, with
+// SANDBOX_ALLOW_LOCAL=1, silently downgrades it to unsandboxed execution). The
+// answer is cached briefly so a single request, and the callers that ask twice,
+// agree with each other and don't pay for the probe on every call.
+const DOCKER_PROBE_TIMEOUT_MS = 8000;
+const DOCKER_CACHE_UP_MS = 30_000;
+const DOCKER_CACHE_DOWN_MS = 5_000;
+let dockerProbe = { at: 0, up: false };
+
 export function isDockerRunning() {
+  const age = Date.now() - dockerProbe.at;
+  if (dockerProbe.at && age < (dockerProbe.up ? DOCKER_CACHE_UP_MS : DOCKER_CACHE_DOWN_MS)) return dockerProbe.up;
+  let up = false;
   try {
-    execSync('docker info', { stdio: 'ignore', timeout: 1500 });
-    return true;
-  } catch {
-    return false;
-  }
+    execSync('docker info', { stdio: 'ignore', timeout: DOCKER_PROBE_TIMEOUT_MS });
+    up = true;
+  } catch { /* not installed, not running, or not responding */ }
+  dockerProbe = { at: Date.now(), up };
+  return up;
 }
 
 function isCodeSafe(code, language) {
