@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'os';
 import fs from 'fs';
 import path from 'path';
+import { spawnSync } from 'child_process';
 
 process.env.SANDBOX_WORKSPACE = fs.mkdtempSync(path.join(os.tmpdir(), 'second-brain-sandbox-test-'));
 process.on('exit', () => { try { fs.rmSync(process.env.SANDBOX_WORKSPACE, { recursive: true, force: true }); } catch { /* best effort */ } });
