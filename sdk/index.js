@@ -34,7 +34,11 @@ function sanitizeTitle(title) {
     .replace(/[\u0000-\u001f]/g, ' ')
     .replace(/[<>:"/\\|?*]/g, '-')
     .replace(/\s+/g, ' ')
-    .trim();
+    .trim()
+    // The server rejects titles over 200 characters or ending in "." / " "
+    // (invalid on Windows), e.g. a task prompt that ends with a full stop.
+    .slice(0, 200)
+    .replace(/[. ]+$/, '');
 }
 
 const isoDate = () => new Date().toISOString().slice(0, 10);

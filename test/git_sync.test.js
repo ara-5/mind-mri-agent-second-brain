@@ -6,11 +6,20 @@ import path from 'path';
 import { execSync } from 'child_process';
 import { createGitSync } from '../sdk/git_sync.js';
 
+// One cleanup hook for every temp repo the tests create.
+const tempRoots = [];
+process.on('exit', () => {
+  for (const root of tempRoots) {
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+});
+
 // Real git commands against a real temp repo (with a local bare "remote"),
 // not mocked — the whole point of this suite is to catch a bad `git add`
 // pathspec or command-construction bug by running the real command.
 function initRepoWithRemote() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'second-brain-gitsync-test-'));
+  tempRoots.push(root);
   const bareRemote = path.join(root, 'remote.git');
   const workDir = path.join(root, 'work');
   const vaultDir = path.join(workDir, 'vault');

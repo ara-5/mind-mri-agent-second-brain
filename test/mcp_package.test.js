@@ -55,9 +55,15 @@ before(async () => {
   throw new Error('test API server did not start');
 });
 
-after(() => {
-  apiProc?.kill();
-  fs.rmSync(vault, { recursive: true, force: true });
+after(async () => {
+  if (apiProc && apiProc.exitCode === null) {
+    const exited = new Promise((resolve) => apiProc.once('exit', resolve));
+    apiProc.kill();
+    await exited;
+  }
+  // Windows can still hold the folder for a moment after the process exits, and
+  // a leftover temp folder must not fail the suite.
+  try { fs.rmSync(vault, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* best effort */ }
 });
 
 function mcp(messages) {
@@ -114,4 +120,18 @@ test('mark_read rejects unknown ids and non-message notes', async () => {
 
   const res = await fetch(`http://127.0.0.1:${port}/messages/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: 42 }) });
   assert.equal(res.status, 400);
+});
+
+test('POST /dedup/scan validates threshold and maxJudged instead of flagging everything', async () => {
+  const post = (body) => fetch(`http://127.0.0.1:${port}/dedup/scan`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  for (const threshold of ['abc', 0, -1, 1.5, null, [], {}]) {
+    assert.equal((await post({ threshold, judge: false })).status, 400, `threshold ${JSON.stringify(threshold)}`);
+  }
+  for (const maxJudged of ['5', -1, 1.5, 1000]) {
+    assert.equal((await post({ maxJudged, judge: false })).status, 400, `maxJudged ${JSON.stringify(maxJudged)}`);
+  }
+  assert.equal((await post({ threshold: 0.9, maxJudged: 3, judge: false })).status, 200);
+  assert.equal((await post({ judge: false })).status, 200);
 });

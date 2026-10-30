@@ -24,6 +24,20 @@ import { SecondBrain } from './index.js';
 
 const STATUSES = ['pending', 'running', 'completed', 'failed', 'cancelled', 'blocked'];
 
+// The task body is a markdown document with fixed "## ..." sections that
+// appendResult / setFinalResult locate by heading. Text that came from a caller
+// (the prompt, an agent's result) must not be able to contain a line that looks
+// like one of those headings, or the section edits would cut at the wrong place
+// and drop the rest of the task. A leading backslash keeps it readable text.
+const SECTION_LINE = /^(##[ \t]+(?:Prompt|Sub-Results|Final Result|Error))[ \t]*$/gm;
+const defang = (text) => String(text ?? '').replace(SECTION_LINE, '\\$1');
+
+// Position of a real section heading (a whole line), or null.
+function findSection(content, heading) {
+  const m = new RegExp(`^${heading}[ \\t]*$`, 'm').exec(content);
+  return m ? { start: m.index, end: m.index + m[0].length } : null;
+}
+
 export class TaskQueue {
   constructor(options = {}) {
     this.brain = new SecondBrain({
@@ -69,7 +83,7 @@ export class TaskQueue {
       deps.length ? `dependencies: ${deps.join(', ')}` : null,
       '',
       '## Prompt',
-      prompt,
+      defang(prompt),
       '',
       '## Sub-Results',
       '',
@@ -206,12 +220,12 @@ export class TaskQueue {
 
     const marker  = '## Sub-Results';
     const content  = node.content || '';
-    const idx      = content.indexOf(marker);
-    const section  = `\n### ${agentName}\n${result}\n`;
+    const found    = findSection(content, marker);
+    const section  = `\n### ${defang(agentName).replace(/\s+/g, ' ')}\n${defang(result)}\n`;
 
     let newContent;
-    if (idx !== -1) {
-      newContent = content.slice(0, idx + marker.length) + section + content.slice(idx + marker.length);
+    if (found) {
+      newContent = content.slice(0, found.end) + section + content.slice(found.end);
     } else {
       newContent = content + '\n## Sub-Results\n' + section;
     }
@@ -228,12 +242,12 @@ export class TaskQueue {
 
     const marker   = '## Final Result';
     const content   = node.content || '';
-    const idx       = content.indexOf(marker);
-    const section   = `\n${finalResult}\n`;
+    const found     = findSection(content, marker);
+    const section   = `\n${defang(finalResult)}\n`;
 
     let newContent;
-    if (idx !== -1) {
-      newContent = content.slice(0, idx + marker.length) + section;
+    if (found) {
+      newContent = content.slice(0, found.end) + section;
     } else {
       newContent = content + '\n## Final Result\n' + section;
     }

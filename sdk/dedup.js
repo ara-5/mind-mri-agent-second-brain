@@ -26,6 +26,9 @@ import { routeLLM } from './llm_router.js';
 // rare while actually catching near-duplicates in practice.
 export const DEDUP_SIMILARITY_THRESHOLD = 0.93;
 
+// Upper bound on LLM judge calls in one scan (see scanForDuplicates).
+export const DEFAULT_MAX_JUDGED = 25;
+
 function cosineSimilarity(v1, v2) {
   if (!v1 || !v2 || v1.length !== v2.length) return 0;
   let dot = 0, mag1 = 0, mag2 = 0;
@@ -133,9 +136,11 @@ export async function judgeDuplicate(candidate, existing, llmKeys, logFn = () =>
  * @param {object} [opts.embeddingKeys] - resolveKeys() bundle for embeddings
  * @param {object} [opts.llmKeys]       - resolveKeys() bundle for the judge
  * @param {number} [opts.threshold]     - override DEDUP_SIMILARITY_THRESHOLD
- * @param {boolean} [opts.judge]        - also run the LLM judge on each
- *   candidate pair (default true). Set false to just report similarity
- *   without spending an LLM call per candidate.
+ * @param {boolean} [opts.judge]        - also run the LLM judge on candidate
+ *   pairs (default true). Set false to just report similarity without
+ *   spending LLM calls.
+ * @param {number} [opts.maxJudged]     - judge only the N most similar pairs
+ *   (default DEFAULT_MAX_JUDGED); the rest are reported with verdict null.
  * @returns {Promise<Array<{a, b, similarity, verdict}>>}
  */
 export async function scanForDuplicates(nodes, opts = {}) {
@@ -143,6 +148,7 @@ export async function scanForDuplicates(nodes, opts = {}) {
   const llmKeys = opts.llmKeys || {};
   const threshold = opts.threshold ?? DEDUP_SIMILARITY_THRESHOLD;
   const runJudge = opts.judge !== false;
+  const maxJudged = Number.isInteger(opts.maxJudged) && opts.maxJudged >= 0 ? opts.maxJudged : DEFAULT_MAX_JUDGED;
   const logFn = opts.logFn || (() => {});
 
   const candidates = [];
@@ -169,21 +175,12 @@ export async function scanForDuplicates(nodes, opts = {}) {
         const similarity = cosineSimilarity(entry.vector, otherEntry.vector);
         if (similarity < threshold) continue;
 
-        let verdict = null;
-        if (runJudge) {
-          try {
-            verdict = await judgeDuplicate(node, other, llmKeys, logFn);
-          } catch (err) {
-            logFn(`[dedup] scan judge call failed for ${node.id}/${other.id}: ${err.message}`);
-            verdict = { action: 'keep' };
-          }
-        }
-
         candidates.push({
           a: { id: node.id, title: node.title },
           b: { id: other.id, title: other.title },
           similarity,
-          verdict,
+          verdict: null,
+          pair: [node, other],
         });
       }
     }
@@ -192,5 +189,21 @@ export async function scanForDuplicates(nodes, opts = {}) {
     return [];
   }
 
-  return candidates.sort((x, y) => y.similarity - x.similarity);
+  candidates.sort((x, y) => y.similarity - x.similarity);
+
+  // Each judged pair is a paid LLM call, so only the closest matches get one;
+  // the rest are still reported (verdict null) so nothing is hidden.
+  if (runJudge) {
+    for (const candidate of candidates.slice(0, maxJudged)) {
+      const [node, other] = candidate.pair;
+      try {
+        candidate.verdict = await judgeDuplicate(node, other, llmKeys, logFn);
+      } catch (err) {
+        logFn(`[dedup] scan judge call failed for ${node.id}/${other.id}: ${err.message}`);
+        candidate.verdict = { action: 'keep' };
+      }
+    }
+  }
+  for (const candidate of candidates) delete candidate.pair;
+  return candidates;
 }

@@ -9,6 +9,7 @@ import path from 'path';
 // scratch vault before the (dynamic) imports run, same pattern as
 // embeddings.test.js/dedup.test.js.
 const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'second-brain-hybrid-search-test-'));
+process.on('exit', () => { try { fs.rmSync(tmpVault, { recursive: true, force: true }); } catch { /* best effort */ } });
 process.env.BRAIN_VAULT = tmpVault;
 
 function writeNodeFile(id, { title, content, type = 'memory' }) {

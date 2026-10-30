@@ -7,6 +7,7 @@ import path from 'path';
 // brain_engine.js resolves VAULT_DIR from BRAIN_VAULT at import time, same
 // pattern as embeddings.test.js/search_hybrid.test.js.
 const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'second-brain-brain-engine-test-'));
+process.on('exit', () => { try { fs.rmSync(tmpVault, { recursive: true, force: true }); } catch { /* best effort */ } });
 process.env.BRAIN_VAULT = tmpVault;
 
 const { writeNode, updateNodeFile, validateNode } = await import('../api/brain_engine.js');

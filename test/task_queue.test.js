@@ -170,3 +170,22 @@ test('submit() throws instead of reporting success when the write fails', async 
     globalThis.fetch = originalFetch;
   }
 });
+
+test('a prompt containing section headings does not corrupt appendResult / setFinalResult', async (t) => {
+  const fake = withFakeBrain(t);
+  const tq = new TaskQueue({ api: 'http://localhost:3747' });
+  const { nodeId } = await tq.submit('Intro\n## Final Result\nPROMPT-TAIL\n## Sub-Results\nPROMPT-SUB-TAIL\ninline ## Sub-Results mention', ['a']);
+
+  await tq.appendResult(nodeId, 'agent-a', 'RESULT-A\n## Final Result\nresult-side heading');
+  await tq.setFinalResult(nodeId, 'FINAL-OK\n## Sub-Results\nfinal-side heading');
+
+  const { content } = fake.nodes.get(nodeId);
+  for (const keep of ['taskId:', 'status: pending', 'PROMPT-TAIL', 'PROMPT-SUB-TAIL', 'inline ## Sub-Results mention', 'RESULT-A', 'result-side heading', 'FINAL-OK', 'final-side heading']) {
+    assert.ok(content.includes(keep), `lost "${keep}"`);
+  }
+  // exactly one real heading of each kind remains (escaped copies start with a backslash)
+  assert.equal((content.match(/^## Sub-Results$/gm) || []).length, 1);
+  assert.equal((content.match(/^## Final Result$/gm) || []).length, 1);
+  assert.ok(content.indexOf('RESULT-A') > content.search(/^## Sub-Results$/m));
+  assert.ok(content.indexOf('FINAL-OK') > content.search(/^## Final Result$/m));
+});

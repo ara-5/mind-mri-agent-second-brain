@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 
 const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'second-brain-frontmatter-test-'));
+process.on('exit', () => { try { fs.rmSync(tmpVault, { recursive: true, force: true }); } catch { /* best effort */ } });
 process.env.BRAIN_VAULT = tmpVault;
 
 const { writeNode, updateNodeFile, loadVault } = await import('../api/brain_engine.js');

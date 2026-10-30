@@ -26,6 +26,17 @@ const VAULT_DIR = process.env.BRAIN_VAULT ? path.resolve(process.env.BRAIN_VAULT
 const DB_FILE = path.join(VAULT_DIR, '.embeddings.db');
 
 let db = null;
+
+// Releases the SQLite file handle. Runs first on process exit (prepended, so it
+// precedes any cleanup hook registered earlier) because Windows refuses to delete
+// a database file that is still open.
+export function closeEmbeddingsDb() {
+  if (!db) return;
+  try { db.close(); } catch { /* already closed */ }
+  db = null;
+}
+process.prependListener('exit', closeEmbeddingsDb);
+
 function getDb() {
   if (db) return db;
   fs.mkdirSync(VAULT_DIR, { recursive: true });

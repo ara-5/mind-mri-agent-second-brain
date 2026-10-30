@@ -27,3 +27,15 @@ test('remember() without a title uses a filename-safe default (no locale-date sl
   await brain.remember('x');
   assert.match(sent[0].title, /^Memory . \d{4}-\d{2}-\d{2}$/);
 });
+
+test('remember() strips trailing periods/spaces and caps the title at 200 characters', async (t) => {
+  const sent = captureRemember(t);
+  const brain = new SecondBrain({ agent: 'a', silent: true });
+  await brain.remember('x', { title: 'Task - fix the build.' });
+  await brain.remember('x', { title: `${'a'.repeat(250)}.` });
+  await brain.remember('x', { title: 'ends with dots...   ' });
+  assert.equal(sent[0].title, 'Task - fix the build');
+  assert.equal(sent[1].title.length, 200);
+  assert.equal(sent[2].title, 'ends with dots');
+  for (const s of sent) assert.ok(!/[. ]$/.test(s.title));
+});

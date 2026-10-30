@@ -7,6 +7,7 @@ import path from 'path';
 // embeddings.js resolves its cache path from BRAIN_VAULT at import time, so
 // point it at a scratch directory before the (dynamic) import runs.
 const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'second-brain-embeddings-test-'));
+process.on('exit', () => { try { fs.rmSync(tmpVault, { recursive: true, force: true }); } catch { /* best effort */ } });
 process.env.BRAIN_VAULT = tmpVault;
 const { updateNodeEmbedding, batchUpdateNodeEmbeddings, getEmbeddingsCache, getEmbedding, meanPoolAndNormalize } = await import('../sdk/embeddings.js');
 

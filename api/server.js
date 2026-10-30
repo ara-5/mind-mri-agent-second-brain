@@ -886,12 +886,21 @@ ${memoryText}`;
   if (method === 'POST' && p === '/dedup/scan') {
     const body = await readBody(req);
     const dryRun = body.dryRun !== false;
+    // A non-numeric threshold makes every comparison pass, turning the scan
+    // into "every note is a duplicate of every other" plus an LLM call for each.
+    if (body.threshold !== undefined && !(typeof body.threshold === 'number' && body.threshold > 0 && body.threshold <= 1)) {
+      return validationError(res, 'threshold must be a number greater than 0 and at most 1.');
+    }
+    if (body.maxJudged !== undefined && !(Number.isInteger(body.maxJudged) && body.maxJudged >= 0 && body.maxJudged <= 200)) {
+      return validationError(res, 'maxJudged must be an integer between 0 and 200.');
+    }
     const keys = resolveKeys({ ...body, ollamaHost: undefined, ollamaModel: undefined });
     const candidates = await scanForDuplicates(nodes, {
       embeddingKeys: keys,
       llmKeys: keys,
       judge: body.judge !== false,
       threshold: body.threshold,
+      maxJudged: body.maxJudged,
       logFn: (m) => console.log(`[dedup] ${m}`),
     });
     return json(res, { dryRun, candidateCount: candidates.length, candidates });

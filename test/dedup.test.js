@@ -8,9 +8,10 @@ import path from 'path';
 // BRAIN_VAULT at import time — point it at a scratch directory before the
 // (dynamic) import runs, same pattern as embeddings.test.js.
 const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'second-brain-dedup-test-'));
+process.on('exit', () => { try { fs.rmSync(tmpVault, { recursive: true, force: true }); } catch { /* best effort */ } });
 process.env.BRAIN_VAULT = tmpVault;
 
-const { findMostSimilarNode, judgeDuplicate, DEDUP_SIMILARITY_THRESHOLD } = await import('../sdk/dedup.js');
+const { findMostSimilarNode, judgeDuplicate, scanForDuplicates, DEDUP_SIMILARITY_THRESHOLD, DEFAULT_MAX_JUDGED } = await import('../sdk/dedup.js');
 const { saveEmbeddingsCache } = await import('../sdk/embeddings.js');
 
 function fakeEmbeddingResponse(vector) {
@@ -108,4 +109,49 @@ test('judgeDuplicate fails open (keeps both) when the LLM call errors', async (t
     { anthropicKey: 'test-key' },
   );
   assert.equal(verdict.action, 'keep');
+});
+
+// ── scanForDuplicates ─────────────────────────────────────────────────────
+
+function scanFixture(count) {
+  const cache = {};
+  const nodes = {};
+  for (let i = 0; i < count; i++) {
+    const id = `n${i}`;
+    // near-identical vectors, each slightly closer/farther so the order is deterministic
+    cache[id] = { hash: `h${i}`, vector: [1, i * 0.0001, 0], updatedAt: '' };
+    nodes[id] = { id, type: 'memory', agent: 'a', title: `Note ${i}`, content: `c${i}` };
+  }
+  saveEmbeddingsCache(cache);
+  return nodes;
+}
+
+test('scanForDuplicates judges at most maxJudged pairs but still reports every candidate', async (t) => {
+  const nodes = scanFixture(6); // 15 pairs, all above the threshold
+  let llmCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { llmCalls++; return { json: async () => ({ content: [{ text: '{"action":"keep"}' }] }) }; };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const out = await scanForDuplicates(nodes, { llmKeys: { anthropicKey: 'k' }, maxJudged: 4 });
+  assert.equal(out.length, 15);
+  assert.equal(llmCalls, 4);
+  assert.equal(out.filter(c => c.verdict).length, 4);
+  assert.ok(out.every((c, i) => i === 0 || out[i - 1].similarity >= c.similarity), 'sorted most-similar first');
+  assert.ok(out.slice(0, 4).every(c => c.verdict), 'the closest pairs are the ones judged');
+  assert.ok(out.every(c => !('pair' in c)), 'internal node references are not leaked');
+});
+
+test('scanForDuplicates makes no LLM calls with judge:false, and the default cap is bounded', async (t) => {
+  const nodes = scanFixture(10); // 45 pairs
+  let llmCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { llmCalls++; return { json: async () => ({ content: [{ text: '{"action":"keep"}' }] }) }; };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  assert.equal((await scanForDuplicates(nodes, { judge: false })).length, 45);
+  assert.equal(llmCalls, 0);
+
+  await scanForDuplicates(scanFixture(12), { llmKeys: { anthropicKey: 'k' } }); // 66 pairs
+  assert.equal(llmCalls, DEFAULT_MAX_JUDGED);
 });

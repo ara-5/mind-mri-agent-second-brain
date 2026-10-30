@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 
 process.env.SANDBOX_WORKSPACE = fs.mkdtempSync(path.join(os.tmpdir(), 'second-brain-sandbox-test-'));
+process.on('exit', () => { try { fs.rmSync(process.env.SANDBOX_WORKSPACE, { recursive: true, force: true }); } catch { /* best effort */ } });
 const { executeCode, isDockerRunning } = await import('../sdk/sandbox.js');
 
 test('local fallback is refused unless SANDBOX_ALLOW_LOCAL=1', { skip: isDockerRunning() }, async () => {
