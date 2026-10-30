@@ -1,7 +1,7 @@
 {
   "name": "mind-mri-second-brain",
   "mcpName": "io.github.ara-5/second-brain",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "version": "1.5.0",
   "description": "Zero-dependency Graph-RAG second brain for AI agents: a markdown/Obsidian vault with wikilink graph search, shared memory, task queue and messaging, exposed as an MCP server, REST API and CLI.",
   "type": "module",

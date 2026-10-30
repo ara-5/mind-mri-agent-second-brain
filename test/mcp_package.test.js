@@ -135,3 +135,10 @@ test('POST /dedup/scan validates threshold and maxJudged instead of flagging eve
   assert.equal((await post({ threshold: 0.9, maxJudged: 3, judge: false })).status, 200);
   assert.equal((await post({ judge: false })).status, 200);
 });
+
+test('declared licence matches the LICENSE file', () => {
+  const text = fs.readFileSync(path.join(ROOT, 'LICENSE'), 'utf8');
+  assert.equal(pkg.license, 'MIT');
+  assert.match(text, /^MIT License/);
+  assert.match(text, /Permission is hereby granted, free of charge/);
+});

@@ -22,5 +22,5 @@
 - Earlier hardening: path traversal, command injection in git sync, dashboard XSS, loopback-only binding, sandbox isolation, frontmatter round-tripping, multilingual search and tags, time-decay hiding old notes.
 
 ### Changed
-- Licence is PolyForm Noncommercial 1.0.0.
+- Licence is now MIT (earlier releases were under PolyForm Noncommercial 1.0.0).
 - Agent and subdirectory names must be single safe path segments (no `/`, `\`, `:` and similar).
