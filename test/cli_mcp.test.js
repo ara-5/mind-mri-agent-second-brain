@@ -118,3 +118,21 @@ test('mcp: initialize negotiates the protocol version and ships instructions', (
   assert.match(out[0].result.instructions, /brain_recall/);
   assert.ok(out[2].result.tools.every(t => t.title && t.annotations));
 });
+
+test('mcp: connecting and listing tools does not start the API server', async () => {
+  const net = await import('node:net');
+  const port = await new Promise((resolve) => {
+    const s = net.createServer().listen(0, '127.0.0.1', () => { const { port: p } = s.address(); s.close(() => resolve(p)); });
+  });
+  const r = spawnSync(process.execPath, [path.join(ROOT, 'mcp', 'server.js')], {
+    input: '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n',
+    encoding: 'utf8', timeout: 20_000, env: { ...process.env, BRAIN_PORT: String(port) },
+  });
+  assert.equal(r.status, 0);
+  await new Promise((resolve) => setTimeout(resolve, 2000)); // a boot would be listening well within this
+  const listening = await new Promise((resolve) => {
+    const c = net.connect({ host: '127.0.0.1', port }, () => { c.destroy(); resolve(true); });
+    c.on('error', () => resolve(false));
+  });
+  assert.equal(listening, false, 'an API server was left running after a connect-and-list session');
+});

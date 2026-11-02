@@ -436,6 +436,6 @@ process.stdout.on('error', (err) => {
 
 log(`Ready. Will proxy to ${BASE} (auto-starting the API server on first tool call if needed).`);
 
-// Kick off a background health check / boot at startup so the first real
-// tool call doesn't have to pay the cold-start latency.
-ensureServerRunning().catch(() => {});
+// Deliberately no start-up boot of the API server. A client (or a registry
+// scanner / the MCP Inspector) that only connects and lists tools must not leave
+// a detached background process behind; the first tool call pays the ~1s start.

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.1
+
+### Fixed
+- The MCP server no longer starts the API server as soon as a client connects. It starts on the first tool call, as documented, so connecting only to list tools (registry scanners, the MCP Inspector) leaves no background process behind.
+
 ## 1.5.0
 
 ### Added
