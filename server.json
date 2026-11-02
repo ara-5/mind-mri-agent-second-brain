@@ -14,11 +14,29 @@
       "identifier": "mind-mri-second-brain",
       "version": "1.5.0",
       "runtimeHint": "npx",
-      "transport": { "type": "stdio" },
+      "transport": {
+        "type": "stdio"
+      },
       "environmentVariables": [
-        { "name": "BRAIN_VAULT", "description": "Folder holding the markdown vault. Defaults to ~/.second-brain/vault when installed from npm.", "isRequired": false },
-        { "name": "BRAIN_PORT", "description": "Port of the local API server the MCP server starts and talks to (default 3747).", "isRequired": false },
-        { "name": "BRAIN_KEY", "description": "Optional API key; when set the local API requires it as a Bearer token.", "isRequired": false, "isSecret": true }
+        {
+          "name": "BRAIN_VAULT",
+          "description": "Folder holding the markdown vault. Defaults to ~/.second-brain/vault when installed from npm.",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "BRAIN_PORT",
+          "description": "Port of the local API server the MCP server starts and talks to (default 3747).",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "BRAIN_KEY",
+          "description": "Optional API key; when set the local API requires it as a Bearer token.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        }
       ]
     }
   ]
