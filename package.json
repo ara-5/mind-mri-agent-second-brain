@@ -5,6 +5,7 @@
   "version": "1.6.1",
   "description": "Zero-dependency Graph-RAG second brain for AI agents: a markdown/Obsidian vault with wikilink graph search, shared memory, task queue and messaging, exposed as an MCP server, REST API and CLI.",
   "type": "module",
+  "main": "mcp/server.js",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ara-5/mind-mri-agent-second-brain.git"
@@ -33,6 +34,7 @@
     "ui":     "node sdk/open_ui.js",
     "brain":  "node sdk/cli.js",
     "mcp":    "node mcp/server.js",
+    "build":  "node scripts/check-syntax.mjs",
     "test":   "node --test test/*.test.js"
   },
   "engines": { "node": ">=22.5.0" },

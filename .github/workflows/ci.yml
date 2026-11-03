@@ -33,8 +33,5 @@ jobs:
         run: |
           docker build -t second-brain-ci .
           node scripts/docker-smoke.mjs second-brain-ci
-      - name: Sanity-check every module parses (syntax check)
-        run: |
-          for f in $(find api sdk mcp -name '*.js'); do
-            node --check "$f"
-          done
+      - name: Build (syntax-check every source file)
+        run: npm run build
