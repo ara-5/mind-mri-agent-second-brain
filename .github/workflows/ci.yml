@@ -28,6 +28,11 @@ jobs:
         run: docker pull -q node:22-alpine
       - name: Run test suite (zero dependencies — no install step needed)
         run: npm test
+      - name: Build the Docker image and speak MCP to it
+        if: matrix.node-version == '24.x'
+        run: |
+          docker build -t second-brain-ci .
+          node scripts/docker-smoke.mjs second-brain-ci
       - name: Sanity-check every module parses (syntax check)
         run: |
           for f in $(find api sdk mcp -name '*.js'); do

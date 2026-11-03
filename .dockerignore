@@ -1,0 +1,11 @@
+.git
+.github
+node_modules
+test
+vault
+sandbox_workspace
+assets
+migrations
+*.log
+.env
+.env.*
