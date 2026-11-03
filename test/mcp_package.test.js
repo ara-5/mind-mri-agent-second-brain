@@ -242,3 +242,62 @@ test('an oversized request gets a clear 413 (not a reset connection), and the se
   const small = await fetch(`http://127.0.0.1:${port}/remember`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'After big', content: 'ok' }) });
   assert.equal(small.status, 201);
 });
+
+test('brain_tasks_update: claim, complete with a result, release a dependent, keep the prompt', () => {
+  const [a] = mcp([call('brain_tasks_submit', { prompt: 'Step one: write the migration', title: 'Lifecycle A' })]);
+  const aId = text(a).nodeId;
+  const [b] = mcp([call('brain_tasks_submit', { prompt: 'Step two: run it', title: 'Lifecycle B', dependencies: [aId] })]);
+  assert.equal(text(b).status, 'blocked');
+
+  const [running] = mcp([call('brain_tasks_update', { id: aId, status: 'running' })]);
+  assert.equal(text(running).success, true);
+  assert.equal(text(running).releasedDependents, 0);
+
+  const [done] = mcp([call('brain_tasks_update', { id: aId, status: 'completed', result: 'Migration written in db/001.sql' })]);
+  assert.equal(text(done).success, true);
+  assert.equal(text(done).releasedDependents, 1);
+
+  const [got] = mcp([call('brain_node_get', { id: aId })]);
+  const node = text(got);
+  assert.ok(node.tags.includes('completed') && !node.tags.includes('running'));
+  assert.ok(node.content.includes('Step one: write the migration'), 'the prompt must survive');
+  assert.ok(node.content.includes('Migration written in db/001.sql'), 'the result must be recorded');
+  assert.match(node.content, /status: completed/);
+
+  const [pending] = mcp([call('brain_tasks_list', { status: 'pending' })]);
+  assert.ok(text(pending).tasks.some((t) => t.title === 'Lifecycle B'), 'the dependent should now be pending');
+  const [blocked] = mcp([call('brain_tasks_list', { status: 'blocked' })]);
+  assert.ok(!text(blocked).tasks.some((t) => t.title === 'Lifecycle B'));
+
+  // a second result replaces the first; the status call is repeatable
+  mcp([call('brain_tasks_update', { id: aId, status: 'completed', result: 'Revised outcome' })]);
+  const [again] = mcp([call('brain_node_get', { id: aId })]);
+  assert.ok(text(again).content.includes('Revised outcome') && !text(again).content.includes('db/001.sql'));
+});
+
+test('brain_tasks_update: a failed dependency fails its dependents', () => {
+  const [c] = mcp([call('brain_tasks_submit', { prompt: 'Risky step', title: 'Cascade C' })]);
+  const cId = text(c).nodeId;
+  const [d] = mcp([call('brain_tasks_submit', { prompt: 'Needs C', title: 'Cascade D', dependencies: [cId] })]);
+  const dId = text(d).nodeId;
+  mcp([call('brain_tasks_update', { id: cId, status: 'failed', result: 'It broke' })]);
+  const [got] = mcp([call('brain_node_get', { id: dId })]);
+  assert.ok(text(got).tags.includes('failed'), 'the dependent should be failed, not left blocked forever');
+});
+
+test('brain_tasks_update refuses ids that are not tasks and leaves those notes untouched', async () => {
+  const [made] = mcp([call('brain_remember', { title: 'Not a task note', content: 'plain note', tags: ['keep-me'] })]);
+  const id = text(made).id;
+  const [reply] = mcp([call('brain_tasks_update', { id, status: 'completed' })]);
+  assert.equal(reply.result.isError, true);
+  assert.match(reply.result.content[0].text, /Task not found/);
+  const [missing] = mcp([call('brain_tasks_update', { id: 'tasks/does-not-exist', status: 'completed' })]);
+  assert.equal(missing.result.isError, true);
+  const [after] = mcp([call('brain_node_get', { id })]);
+  assert.deepEqual(text(after).tags, ['keep-me'], 'a rejected update must not retag the note');
+
+  const bad = await fetch(`http://127.0.0.1:${port}/tasks/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'completed', result: 42 }) });
+  assert.equal(bad.status, 400);
+  const [badStatus] = mcp([call('brain_tasks_update', { id: 'tasks/x', status: 'finished' })]);
+  assert.equal(badStatus.result.isError, true);
+});

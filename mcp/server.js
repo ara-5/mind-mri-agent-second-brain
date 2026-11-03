@@ -129,7 +129,7 @@ const TOOLS = [
   },
   {
     name: 'brain_remember',
-    description: 'Write a new memory/research note into the shared Second Brain vault so future sessions, in this or any other project, can recall it later. Memory hygiene: only call this for a genuine, reusable learning — a fact, pattern, constraint, or decision that will change future behavior or save someone from re-deriving something. Do NOT call it for routine task completions, raw task output, status updates, or anything the task queue already records. Before calling, ask: "would a future session be worse off without this specific note?" — if no, skip it. Prefer updating an existing relevant note over creating a near-duplicate one (use brain_search first, then brain_node_update). Creates a new note and never overwrites an existing one (a title clash gets a numbered filename). Returns { success, id, title, type, version }; keep the id to refer to the note later.',
+    description: 'Write a new memory/research note into the shared Second Brain vault so future sessions, in this or any other project, can recall it later. Only for a genuine, reusable learning: a fact, pattern, constraint or decision that would change future behavior or save someone from re-deriving it. Not for routine task completions, raw output or status updates (the task queue records those). Test: would a future session be worse off without this note? If not, skip it. Prefer updating an existing relevant note over creating a near-duplicate one (use brain_search first, then brain_node_update). Creates a new note and never overwrites an existing one (a title clash gets a numbered filename). Returns { success, id, title, type, version }; keep the id to refer to the note later.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -168,7 +168,7 @@ const TOOLS = [
   },
   {
     name: 'brain_node_get',
-    description: 'Fetch one note by id: its full markdown content, metadata (type, tags, agent, importance, version, dates), the notes it links to (outLinks) and the notes that link to it (inLinks). Read-only. Use it to read a note in full before replacing its text with brain_node_update, or to follow a link found in recalled context. Returns an error saying "not found" for an unknown id.',
+    description: 'Fetch one note by id: its full markdown content, metadata (type, tags, agent, importance, version, dates), the notes it links to (outLinks) and the notes that link to it (inLinks). Read-only. Use it to read a note in full before replacing its text with brain_node_update, or to follow a link found in recalled context. The whole note is returned, so a very large note is a large response. Returns an error saying "not found" for an unknown id.',
     inputSchema: {
       type: 'object',
       properties: { id: { type: 'string', minLength: 1, description: 'Note id exactly as returned by brain_search, brain_recall or brain_remember: the path inside the vault without ".md", e.g. "agents/atlas/Decision - Use SQLite for the cache".' } },
@@ -178,7 +178,7 @@ const TOOLS = [
   },
   {
     name: 'brain_tasks_submit',
-    description: 'Add a task to the shared, markdown-backed task queue so another agent (or a later session) can pick it up. A task with dependencies starts as "blocked" and moves to "pending" automatically when all of them complete; otherwise it starts as "pending". This only records the task: it is a coordination list, not a runner, so something else must watch for pending tasks and do the work. Creates a new task note. Returns { taskId, nodeId, status } where status is "pending" or "blocked". Write the prompt so it is self-contained: goal, relevant files, constraints and what "done" means.',
+    description: 'Add a task to the shared, markdown-backed task queue so another agent (or a later session) can pick it up. A task with dependencies starts as "blocked" and moves to "pending" automatically when all of them complete; otherwise it starts as "pending". This only records the task: it is a coordination list, not a runner, so something else must watch for pending tasks (brain_tasks_list) and report back (brain_tasks_update). Returns { taskId, nodeId, status } where status is "pending" or "blocked". Write the prompt so it is self-contained: goal, relevant files, constraints and what "done" means.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -195,7 +195,7 @@ const TOOLS = [
   },
   {
     name: 'brain_tasks_list',
-    description: 'List tasks in the shared task queue, optionally only those with one status. Use status "pending" to find work waiting to be picked up. Read-only. Returns { count, tasks: [{ id, title, tags, content, createdAt }] }; the content holds the prompt and any results written so far. An empty list means no tasks match.',
+    description: 'List the tasks in the shared queue, optionally only those in one state. Use status "pending" to find work waiting for you, "blocked" to see what is waiting on dependencies. Read-only. Returns every matching task with no pagination and no guaranteed order: { count, tasks: [{ id, title, tags, content, createdAt }] }, where content holds the prompt and any result written so far, and id is what brain_tasks_update takes. An empty list means no tasks match. Add tasks with brain_tasks_submit; change the state of a task, or record its outcome, with brain_tasks_update.',
     inputSchema: {
       type: 'object',
       properties: { status: { type: 'string', enum: ['pending', 'running', 'completed', 'failed', 'cancelled', 'blocked'], description: 'Only return tasks in this state. Omit to list all tasks.' } },
@@ -203,8 +203,23 @@ const TOOLS = [
     handler: ({ status }) => request('GET', status ? `/tasks?status=${encodeURIComponent(status)}` : '/tasks'),
   },
   {
+    name: 'brain_tasks_update',
+    description: 'Change the status of a task and, optionally, record its outcome. Use it to claim a task ("running"), finish it ("completed" or "failed") or withdraw it ("cancelled"). Completing a task releases the tasks that were blocked on it: once all the dependencies of a blocked task are completed it becomes "pending"; if a dependency failed or was cancelled, the dependent task is marked "failed" too. The result text is written to the Final Result section of the task, replacing any earlier result; the prompt and sub-results are kept. Setting the same status again is harmless. Returns { success, id, status, releasedDependents } where releasedDependents counts the blocked tasks that moved. Errors: "Task not found" for an id that is not a task note. Find ids with brain_tasks_list; create tasks with brain_tasks_submit.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', minLength: 1, description: 'Task note id: the id field from brain_tasks_list, or the nodeId returned by brain_tasks_submit, e.g. "tasks/Task - Review the migration".' },
+        status: { type: 'string', enum: ['pending', 'running', 'completed', 'failed', 'cancelled', 'blocked'], description: 'The new state. Use "running" when you start, "completed" or "failed" when you finish.' },
+        result: { type: 'string', maxLength: 100000, description: 'What was done or why it failed, in markdown. Stored in the Final Result section of the task. Omit to change only the status.' },
+      },
+      required: ['id', 'status'],
+    },
+    handler: ({ id, status, result }) =>
+      request('PATCH', `/tasks/${encodeURIComponent(id)}`, result === undefined ? { status } : { status, result }),
+  },
+  {
     name: 'brain_messages_send',
-    description: 'Send a message to another agent\'s inbox. The recipient reads it with brain_messages_get and clears it with brain_messages_mark_read. Use it for short hand-off context that does not belong in a task or a permanent note. Creates a new message note; nothing is delivered in real time, the recipient has to check its inbox. Returns { success, id } where id is the message note id.',
+    description: 'Send a message to another agent\'s inbox. The recipient reads it with brain_messages_get and clears it with brain_messages_mark_read. Use it for short hand-off context that does not belong in a task or a permanent note. Nothing is delivered in real time: the recipient has to check its inbox. Any valid name works as a recipient (the inbox is created on first use and unknown names are not rejected), so check the spelling; an invalid name such as one containing a slash is rejected with the reason. Every call creates a new message, so sending the same text twice delivers it twice. Returns { success, id } where id is the message note id.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -220,7 +235,7 @@ const TOOLS = [
   },
   {
     name: 'brain_messages_get',
-    description: 'Read the messages addressed to an agent: unread ones by default, or the full history with unread set to false. Read-only: it does not mark anything as read; call brain_messages_mark_read with each message id once handled. Returns { agent, count, messages: [{ id, title, type, tags, agent, content }] }. count 0 means the inbox is empty.',
+    description: 'Read the messages addressed to an agent: unread ones by default, or the full history with unread set to false. Read-only: it does not mark anything as read; call brain_messages_mark_read with each message id once handled. All matching messages are returned at once, with no pagination and no guaranteed order. Returns { agent, count, messages: [{ id, title, type, tags, agent, content }] }. count 0 means the inbox is empty.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -244,7 +259,7 @@ const TOOLS = [
   },
   {
     name: 'brain_node_update',
-    description: 'Update an existing note in place instead of creating a near-duplicate. mode "append" (default) adds your text to the end and keeps everything already there; mode "replace" overwrites the whole body, so only use it when you have the full corrected text (read it with brain_node_get first). Tags and importance, if given, replace the existing values. Safe against concurrent edits: it checks the note version and retries once if another writer changed it in between. Returns { success: true, id, mode } (mode is omitted when only tags or importance changed). Errors: "not found" for an unknown id, "Nothing to update" if you pass only an id, and a conflict error if two other writers keep racing; in that case read the note again and retry.',
+    description: 'Update an existing note in place instead of creating a near-duplicate. mode "append" (default) adds your text to the end and keeps everything already there; mode "replace" overwrites the whole body, so only use it when you have the full corrected text (read it with brain_node_get first). Tags and importance, if given, replace the existing values. Safe against concurrent edits: it checks the note version and retries once if another writer changed it in between. Returns { success: true, id, mode } (mode is omitted when only tags or importance changed). Errors: "not found" for an unknown id, "Nothing to update" if you pass only an id, and a conflict error if two other writers keep racing; in that case read the note again and retry. No credentials are needed from you: if the server was started with BRAIN_KEY, this MCP server sends it automatically.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -301,7 +316,7 @@ function annotationsFor(name) {
   return {
     readOnlyHint: readOnly,
     destructiveHint: name === 'brain_node_update',
-    idempotentHint: readOnly || name === 'brain_messages_mark_read',
+    idempotentHint: readOnly || name === 'brain_messages_mark_read' || name === 'brain_tasks_update',
     openWorldHint: false,
   };
 }
@@ -314,6 +329,7 @@ const TITLES = {
   brain_node_update: 'Update a note',
   brain_tasks_submit: 'Submit a task',
   brain_tasks_list: 'List tasks',
+  brain_tasks_update: 'Update a task',
   brain_messages_send: 'Send a message',
   brain_messages_get: 'Read an inbox',
   brain_messages_mark_read: 'Mark message read',

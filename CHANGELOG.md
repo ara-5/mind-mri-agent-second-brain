@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.7.0
+
+### Added
+- `brain_tasks_update` MCP tool and a `result` field on `PATCH /tasks/:id`: agents can now claim a task, complete or fail it with a recorded outcome, and completing a task releases the tasks blocked on it (a failed or cancelled dependency fails its dependents). Before, the MCP task queue could only add and list tasks, so nothing could ever finish.
+
+### Changed
+- Tool descriptions now name their sibling tools, state ordering and pagination, cover failure modes (unknown message recipients, duplicate sends) and say each rule once, following per-tool feedback from the Glama quality evaluation.
+
+### Fixed
+- `PATCH /tasks/:id` rewrote the tags of any note whose id you passed, task or not. It now returns 404 unless the note is a task.
+
 ## 1.6.1
 
 ### Changed

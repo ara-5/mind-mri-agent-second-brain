@@ -228,7 +228,7 @@ Running from a clone instead? Use `"command": "node", "args": ["/path/to/repo/mc
 | `brain_node_get` | One note with its outlinks and backlinks | no |
 | `brain_node_update` | Append to or replace an existing note (version-checked, so concurrent writers don't lose edits) | yes |
 | `brain_remember` | Save a new note (creates a new file; never overwrites) | yes |
-| `brain_tasks_submit` / `brain_tasks_list` | Shared markdown task queue | submit |
+| `brain_tasks_submit` / `brain_tasks_list` / `brain_tasks_update` | Shared markdown task queue: add tasks (with dependencies), find pending work, claim and complete tasks with a recorded result; completing a task releases the ones blocked on it | submit, update |
 | `brain_messages_send` / `brain_messages_get` / `brain_messages_mark_read` | Agent-to-agent inboxes | send, mark read |
 | `brain_health` | Server and vault stats | no |
 

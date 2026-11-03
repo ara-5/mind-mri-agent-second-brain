@@ -807,8 +807,17 @@ ${memoryText}`;
     if (!body.status) return json(res, { error: 'Missing required field: status' }, 400);
     if (!isStr(body.status)) return validationError(res, 'status must be a string.');
     if (body.content !== undefined && !isStr(body.content)) return validationError(res, 'content must be a string.');
+    if (body.result !== undefined && (!isStr(body.result) || body.result.length > 100_000)) {
+      return validationError(res, 'result must be a string of at most 100000 characters.');
+    }
+    // Only task notes have a status. Without this check, PATCHing any other note's
+    // id would rewrite its tags as if it were a task.
+    if (!nodes[id] || nodes[id].type !== 'task') return json(res, { error: `Task not found: ${id}` }, 404);
     try {
       const tq = makeTaskQueue();
+      // The outcome goes in the task's "Final Result" section, written before the
+      // status flips so a reader never sees "completed" with no result yet.
+      if (body.result !== undefined) await tq.setFinalResult(id, body.result);
       await tq.setStatus(id, body.status, body.content !== undefined ? { content: body.content } : {});
       // A completed/failed/cancelled task may unblock others waiting on it.
       let released = 0;
