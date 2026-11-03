@@ -98,7 +98,7 @@ async function vaultProblem() {
   const why = health.vaultId
     ? 'is using a different vault'
     : 'is an older version that does not say which vault it uses';
-  return `A Second Brain server is already running at ${BASE}, but it ${why} than the one this MCP server expects (${EXPECTED_VAULT_DIR}). Writing to it could put notes in the wrong vault, so no tool was run. Fix one of these: stop that server; set BRAIN_PORT to a free port (for example 3757) in this MCP server's configuration; or set BRAIN_ALLOW_ANY_VAULT=1 if you really do want to use that server.`;
+  return `A Second Brain server is already running at ${BASE}, but it ${why}. This MCP server expects the vault at ${EXPECTED_VAULT_DIR}. Writing to the other server could put notes in the wrong vault, so no tool was run. Fix one of these: stop that server; set BRAIN_PORT to a free port (for example 3757) in this MCP server's configuration; or set BRAIN_ALLOW_ANY_VAULT=1 if you really do want to use that server.`;
 }
 
 let ensureServerPromise = null;
