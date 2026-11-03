@@ -85,7 +85,7 @@ test('initialize reports the package version; every tool has annotations', () =>
   assert.ok(tools.find((t) => t.name === 'brain_messages_mark_read'));
   for (const t of tools) {
     assert.equal(typeof t.annotations.readOnlyHint, 'boolean', t.name);
-    assert.equal(t.annotations.destructiveHint, false, t.name);
+    assert.equal(t.annotations.destructiveHint, t.name === 'brain_node_update', t.name);
   }
   assert.equal(tools.find((t) => t.name === 'brain_search').annotations.readOnlyHint, true);
   assert.equal(tools.find((t) => t.name === 'brain_remember').annotations.readOnlyHint, false);
@@ -141,4 +141,104 @@ test('declared licence matches the LICENSE file', () => {
   assert.equal(pkg.license, 'MIT');
   assert.match(text, /^MIT License/);
   assert.match(text, /Permission is hereby granted, free of charge/);
+});
+
+test('brain_node_update: append keeps existing text, replace overwrites, tags and importance change', () => {
+  const [made] = mcp([call('brain_remember', { title: 'Updatable', content: 'first line', tags: ['alpha'], importance: 3 })]);
+  const id = text(made).id;
+
+  const [appended] = mcp([call('brain_node_update', { id, content: 'second line' })]);
+  assert.equal(text(appended).success, true);
+  assert.equal(text(appended).mode, 'append');
+  let [got] = mcp([call('brain_node_get', { id })]);
+  let node = text(got);
+  assert.ok(node.content.includes('first line') && node.content.includes('second line'));
+  assert.ok(node.content.indexOf('first line') < node.content.indexOf('second line'));
+  assert.equal(node.version, 2);
+
+  const [replaced] = mcp([call('brain_node_update', { id, content: 'only this now', mode: 'replace', tags: ['beta', 'gamma'], importance: 9 })]);
+  assert.equal(text(replaced).success, true);
+  [got] = mcp([call('brain_node_get', { id })]);
+  node = text(got);
+  assert.ok(node.content.includes('only this now'));
+  assert.ok(!node.content.includes('first line') && !node.content.includes('second line'));
+  assert.deepEqual([...node.tags].sort(), ['beta', 'gamma']);
+  assert.equal(node.importance, 9);
+  assert.equal(node.version, 3);
+
+  // tags-only update leaves the body alone
+  mcp([call('brain_node_update', { id, tags: ['delta'] })]);
+  [got] = mcp([call('brain_node_get', { id })]);
+  assert.ok(text(got).content.includes('only this now'));
+  assert.deepEqual(text(got).tags, ['delta']);
+});
+
+test('brain_node_update: rejects bad input and unknown notes with a clear error', () => {
+  const [made] = mcp([call('brain_remember', { title: 'Strict update', content: 'body' })]);
+  const id = text(made).id;
+  const cases = [
+    [{ id }, /Nothing to update/],
+    [{ id, content: 'x', mode: 'merge' }, /mode must be/],
+    [{ id: 'agents/nobody/missing', content: 'x' }, /not found/i],
+    [{ id, tags: 'not-an-array' }, /tags|Validation/i],
+    [{ id, importance: 99 }, /importance|Validation/i],
+  ];
+  for (const [args, pattern] of cases) {
+    const [reply] = mcp([call('brain_node_update', args)]);
+    assert.equal(reply.result.isError, true, JSON.stringify(args));
+    assert.match(reply.result.content[0].text, pattern, JSON.stringify(args));
+  }
+  const [got] = mcp([call('brain_node_get', { id })]);
+  assert.ok(text(got).content.includes('body'), 'a rejected update must not change the note');
+});
+
+test('brain_node_update: concurrent appends are all kept (no lost updates)', async () => {
+  const [made] = mcp([call('brain_remember', { title: 'Race target', content: 'base' })]);
+  const id = text(made).id;
+  // Separate MCP processes writing at the same moment, like several agents.
+  const runs = Array.from({ length: 4 }, (_, i) => new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(ROOT, 'mcp', 'server.js')], {
+      stdio: ['pipe', 'pipe', 'ignore'],
+      env: { ...process.env, BRAIN_PORT: String(port), BRAIN_VAULT: vault, BRAIN_KEY: '' },
+    });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.on('close', () => resolve(JSON.parse(out.trim().split(String.fromCharCode(10))[0])));
+    child.stdin.end(JSON.stringify({ jsonrpc: '2.0', id: 1, ...call('brain_node_update', { id, content: `appended-${i}` }) }) + String.fromCharCode(10));
+  }));
+  const replies = await Promise.all(runs);
+  const ok = replies.filter((r) => !r.result.isError).length;
+  const [got] = mcp([call('brain_node_get', { id })]);
+  const body = text(got).content;
+  const kept = [0, 1, 2, 3].filter((i) => body.includes(`appended-${i}`)).length;
+  assert.equal(kept, ok, `${ok} updates reported success but ${kept} are in the note`);
+  assert.ok(ok >= 2, 'at least some concurrent updates succeed (a single retry cannot save every one)');
+});
+
+test('an oversized request gets a clear 413 (not a reset connection), and the server stays healthy', async () => {
+  const big = JSON.stringify({ title: 'Too big', content: 'x'.repeat(2_600_000) });
+
+  // 1. Content-Length is declared up front.
+  const res = await fetch(`http://127.0.0.1:${port}/remember`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: big });
+  assert.equal(res.status, 413);
+  assert.match((await res.json()).error, /too large/i);
+
+  // 2. Chunked upload: the size is only discovered while reading.
+  const http = await import('node:http');
+  const status = await new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path: '/remember', method: 'POST', headers: { 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked' } }, (r) => {
+      let data = '';
+      r.on('data', (d) => { data += d; });
+      r.on('end', () => resolve({ code: r.statusCode, data }));
+    });
+    req.on('error', reject);
+    for (let i = 0; i < big.length; i += 100_000) req.write(big.slice(i, i + 100_000));
+    req.end();
+  });
+  assert.equal(status.code, 413);
+  assert.match(JSON.parse(status.data).error, /too large/i);
+
+  assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status, 200);
+  const small = await fetch(`http://127.0.0.1:${port}/remember`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'After big', content: 'ok' }) });
+  assert.equal(small.status, 201);
 });

@@ -155,15 +155,24 @@ async function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
     let size = 0;
+    let tooLarge = false;
+    const rejectTooLarge = () => {
+      if (tooLarge) return;
+      tooLarge = true;
+      body = '';
+      const err = new Error(`Request body too large (limit ${MAX_BODY_BYTES} bytes; raise BRAIN_MAX_BODY_BYTES if you need more)`);
+      err.status = 413;
+      // The error handler sends the 413 and only then closes the connection.
+      // Destroying the socket here would reset it before the client could read
+      // anything, which shows up as an opaque "fetch failed".
+      reject(err);
+    };
+    // Refuse up front when the client says how big the body is.
+    if (Number(req.headers['content-length']) > MAX_BODY_BYTES) { rejectTooLarge(); return; }
     req.on('data', c => {
+      if (tooLarge) return; // discard the rest; the connection is closed after the response
       size += c.length;
-      if (size > MAX_BODY_BYTES) {
-        const err = new Error('Request body too large');
-        err.status = 413;
-        reject(err);
-        req.destroy();
-        return;
-      }
+      if (size > MAX_BODY_BYTES) { rejectTooLarge(); return; }
       body += c;
     });
     req.on('end', () => {
@@ -960,6 +969,27 @@ const server = http.createServer((req, res) => {
     // rejection terminates the process on modern Node).
     const status = err && err.status ? err.status : (err instanceof URIError || err?.code === 'ERR_INVALID_URL' ? 400 : 500);
     if (status === 500) console.error('[server] Unhandled request error:', err);
+    if (status === 413) {
+      // Closing a socket that still has unread request data makes the OS reset the
+      // connection, and the client then loses the 413 it was just sent. So discard
+      // the rest of the upload (within a byte and time budget, so a huge or endless
+      // body cannot tie the connection up) and close once the client has finished
+      // sending and the response has been flushed.
+      res.setHeader('Connection', 'close');
+      let discarded = 0;
+      const timer = setTimeout(() => req.destroy(), 5000);
+      timer.unref();
+      const closeWhenFlushed = () => {
+        clearTimeout(timer);
+        if (res.writableFinished) req.destroy(); else res.once('finish', () => req.destroy());
+      };
+      req.on('data', (chunk) => {
+        discarded += chunk.length;
+        if (discarded > 64 * 1024 * 1024) { clearTimeout(timer); req.destroy(); }
+      });
+      req.once('end', closeWhenFlushed);
+      req.resume();
+    }
     if (!res.headersSent) json(res, { error: status === 500 ? 'Internal server error' : (status === 400 && !err.status ? 'Malformed URL' : err.message) }, status);
     else res.end();
   });

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.6.0
+
+### Added
+- `brain_node_update` MCP tool: append to or replace an existing note in place (version-checked, retries once on a concurrent edit), so agents can extend a note instead of creating near-duplicates. It is the only tool marked destructive, because `replace` overwrites text.
+- README quick start with a real captured session, npm and CI badges.
+
+### Fixed
+- A request over the size limit now gets a clear `413` response. Before, the server reset the connection, which clients saw as an opaque "fetch failed". The rest of the upload is discarded within a byte and time budget, then the connection is closed.
+- `brain_remember` no longer echoes the whole stored note back to the model (it returns id, title, type and version), saving tokens on every save.
+
 ## 1.5.1
 
 ### Fixed

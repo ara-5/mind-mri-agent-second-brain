@@ -1,5 +1,7 @@
 # 🧠 Autonomous Agent Second Brain — Graph-RAG Memory Core
 
+[![npm](https://img.shields.io/npm/v/mind-mri-second-brain.svg)](https://www.npmjs.com/package/mind-mri-second-brain)
+[![CI](https://github.com/ara-5/mind-mri-agent-second-brain/actions/workflows/ci.yml/badge.svg)](https://github.com/ara-5/mind-mri-agent-second-brain/actions/workflows/ci.yml)
 [![GitHub License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-success.svg)](package.json)
 [![Platform](https://img.shields.io/badge/platform-node.js%20%3E%3D%2022.5-orange.svg)](package.json)
@@ -10,6 +12,36 @@ A **zero-dependency, offline-first Graph-RAG memory system** that enables autono
 Designed to operate natively as an **Obsidian Vault** on the filesystem and exposed as a clean REST API and Javascript SDK. By representing memories as interconnected nodes (`[[wikilinks]]`) and fusing **graph traversal, keyword search, optional semantic similarity, and recency** into one ranked signal, it filters and delivers targeted context to LLMs, returning only the notes relevant to a query, within a token budget, instead of whole files or directories.
 
 ![Graph Visualizer Live Demo](assets/visualizer_demo.webp)
+
+## ⚡ Quick start (MCP)
+
+Give Claude Code, Claude Desktop, Cursor or any MCP client a shared, persistent memory in one line. Needs Node 22.5+; no install step, no API keys.
+
+```bash
+claude mcp add second-brain -- npx -y mind-mri-second-brain
+```
+
+Other clients: add `{"mcpServers":{"second-brain":{"command":"npx","args":["-y","mind-mri-second-brain"]}}}` to their MCP config. Your notes are plain markdown in `~/.second-brain/vault`, so you can open the folder in Obsidian and read or edit everything your agents remember. See [MCP Server](#mcp-server) for the tool list and options.
+
+**What a session looks like** (real output from the tools, trimmed for length):
+
+```text
+brain_remember   title "Decision - Use SQLite for the cache", type decision,
+                 content "We chose SQLite over Redis ... See [[Project - Atlas]]."
+                 → { "success": true, "id": "agents/atlas/Decision - Use SQLite for the cache", "version": 1 }
+
+brain_recall     query "what database does Atlas use and why", hops 1
+                 → 2 notes, ~77 tokens:
+                   ### Decision - Use SQLite for the cache [DECISION]
+                   We chose SQLite over Redis for the local cache: zero ops, one file ...
+                   ### Project - Atlas [MEMORY]            ← pulled in through the [[wikilink]]
+                   Atlas is the internal reporting service. Stack: Node, SQLite ...
+
+brain_node_update  id "agents/atlas/Decision - Use SQLite ...", content "Update: confirmed after load test, p95 read latency 3 ms."
+                 → { "success": true, "mode": "append" }
+```
+
+Recall returns just the relevant notes plus the notes they link to, inside a token budget, and frames them to the model as reference data rather than instructions.
 
 ---
 
@@ -194,12 +226,13 @@ Running from a clone instead? Use `"command": "node", "args": ["/path/to/repo/mc
 | `brain_recall` | Graph-RAG context for a query (wikilink hops, token budget) | no |
 | `brain_search` | Ranked keyword (+ semantic, if configured) search | no |
 | `brain_node_get` | One note with its outlinks and backlinks | no |
+| `brain_node_update` | Append to or replace an existing note (version-checked, so concurrent writers don't lose edits) | yes |
 | `brain_remember` | Save a new note (creates a new file; never overwrites) | yes |
 | `brain_tasks_submit` / `brain_tasks_list` | Shared markdown task queue | submit |
 | `brain_messages_send` / `brain_messages_get` / `brain_messages_mark_read` | Agent-to-agent inboxes | send, mark read |
 | `brain_health` | Server and vault stats | no |
 
-Read-only tools carry the MCP `readOnlyHint` annotation, and none are marked destructive.
+Read-only tools carry the MCP `readOnlyHint` annotation. No tool deletes a note; only `brain_node_update` can overwrite existing text (in `replace` mode), so it alone is marked destructive and clients will ask before running it.
 
 ---
 

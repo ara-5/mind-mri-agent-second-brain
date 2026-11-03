@@ -129,7 +129,7 @@ const TOOLS = [
   },
   {
     name: 'brain_remember',
-    description: 'Write a new memory/research note into the shared Second Brain vault so future sessions, in this or any other project, can recall it later. Memory hygiene: only call this for a genuine, reusable learning — a fact, pattern, constraint, or decision that will change future behavior or save someone from re-deriving something. Do NOT call it for routine task completions, raw task output, status updates, or anything the task queue already records. Before calling, ask: "would a future session be worse off without this specific note?" — if no, skip it. Prefer updating an existing relevant note over creating a near-duplicate one (use brain_search first).',
+    description: 'Write a new memory/research note into the shared Second Brain vault so future sessions, in this or any other project, can recall it later. Memory hygiene: only call this for a genuine, reusable learning — a fact, pattern, constraint, or decision that will change future behavior or save someone from re-deriving something. Do NOT call it for routine task completions, raw task output, status updates, or anything the task queue already records. Before calling, ask: "would a future session be worse off without this specific note?" — if no, skip it. Prefer updating an existing relevant note over creating a near-duplicate one (use brain_search first, then brain_node_update).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -142,8 +142,12 @@ const TOOLS = [
       },
       required: ['title', 'content'],
     },
-    handler: ({ title, content, type, tags, agent, importance }) =>
-      request('POST', '/remember', { title, content, type, tags, agent, importance }),
+    // The API echoes the whole stored note back; the caller already has its body, so
+    // return only what it needs to refer to the note again (saves tokens on every save).
+    handler: async ({ title, content, type, tags, agent, importance }) => {
+      const res = await request('POST', '/remember', { title, content, type, tags, agent, importance });
+      return { success: res.success, id: res.id, title: res.node?.title, type: res.node?.type, version: res.node?.version };
+    },
   },
   {
     name: 'brain_search',
@@ -239,6 +243,45 @@ const TOOLS = [
     handler: ({ id }) => request('POST', '/messages/read', { id }),
   },
   {
+    name: 'brain_node_update',
+    description: 'Update an existing note in place instead of creating a near-duplicate. mode "append" (default) adds your text to the end and keeps everything already there; mode "replace" overwrites the whole body, so only use it when you have the full corrected text (read it with brain_node_get first). Tags and importance, if given, replace the existing values. Safe against concurrent edits: it checks the note version and retries once if another writer changed it in between.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Note id from brain_search / brain_recall, e.g. "agents/my-project/Decision - Use SQLite"' },
+        content: { type: 'string', description: 'Text to append, or the full new body in replace mode' },
+        mode: { type: 'string', enum: ['append', 'replace'], description: 'append (default) or replace' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Replaces the note\'s tags' },
+        importance: { type: 'number', description: '1-10' },
+      },
+      required: ['id'],
+    },
+    handler: async ({ id, content, mode = 'append', tags, importance }) => {
+      if (mode !== 'append' && mode !== 'replace') throw new Error('mode must be "append" or "replace".');
+      if (content === undefined && tags === undefined && importance === undefined) {
+        throw new Error('Nothing to update: pass content, tags or importance.');
+      }
+      const url = `/node/${encodeURIComponent(id)}`;
+      for (let attempt = 1; ; attempt++) {
+        const node = await request('GET', url);
+        const body = { version: node.version };
+        if (content !== undefined) {
+          body.content = mode === 'append' ? `${String(node.content || '').trimEnd()}\n\n${content}` : content;
+        }
+        if (tags !== undefined) body.tags = tags;
+        if (importance !== undefined) body.importance = importance;
+        try {
+          const result = await request('PATCH', url, body);
+          return { ...result, mode: content === undefined ? undefined : mode };
+        } catch (err) {
+          // Another writer got in between our read and write: re-read and retry once.
+          if (attempt < 2 && /^Conflict/.test(err.message)) continue;
+          throw err;
+        }
+      }
+    },
+  },
+  {
     name: 'brain_health',
     description: 'Check whether the Second Brain server is up and get vault stats (node/edge counts).',
     inputSchema: { type: 'object', properties: {} },
@@ -249,14 +292,15 @@ const TOOLS = [
 const TOOLS_BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
 
 // MCP tool annotations: clients use these to decide when to ask for permission.
-// Nothing here deletes or overwrites existing notes (writes always create new
-// ones), so no tool is destructive; the vault is the only thing touched.
+// Nothing deletes a note. Only brain_node_update can overwrite existing text
+// (mode "replace"), so it alone is marked destructive; the vault is the only
+// thing any tool touches.
 const READ_ONLY = new Set(['brain_recall', 'brain_search', 'brain_node_get', 'brain_tasks_list', 'brain_messages_get', 'brain_health']);
 function annotationsFor(name) {
   const readOnly = READ_ONLY.has(name);
   return {
     readOnlyHint: readOnly,
-    destructiveHint: false,
+    destructiveHint: name === 'brain_node_update',
     idempotentHint: readOnly || name === 'brain_messages_mark_read',
     openWorldHint: false,
   };
@@ -267,6 +311,7 @@ const TITLES = {
   brain_remember: 'Save a memory',
   brain_search: 'Search notes',
   brain_node_get: 'Get a note',
+  brain_node_update: 'Update a note',
   brain_tasks_submit: 'Submit a task',
   brain_tasks_list: 'List tasks',
   brain_messages_send: 'Send a message',
