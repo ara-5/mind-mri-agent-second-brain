@@ -215,7 +215,7 @@ npm run brain -- org-chart
 }
 ```
 
-For Claude Code: `claude mcp add second-brain -- npx -y mind-mri-second-brain`.
+For Claude Code: `claude mcp add second-brain -- npx -y mind-mri-second-brain`. On native Windows (not WSL), Claude Code needs `npx` wrapped in `cmd /c`: `claude mcp add second-brain -- cmd /c npx -y mind-mri-second-brain`. In a JSON config the equivalent is `"command": "cmd", "args": ["/c", "npx", "-y", "mind-mri-second-brain"]`.
 
 Running from a clone instead? Use `"command": "node", "args": ["/path/to/repo/mcp/server.js"]`.
 
