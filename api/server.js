@@ -970,24 +970,20 @@ const server = http.createServer((req, res) => {
     const status = err && err.status ? err.status : (err instanceof URIError || err?.code === 'ERR_INVALID_URL' ? 400 : 500);
     if (status === 500) console.error('[server] Unhandled request error:', err);
     if (status === 413) {
-      // Closing a socket that still has unread request data makes the OS reset the
-      // connection, and the client then loses the 413 it was just sent. So discard
-      // the rest of the upload (within a byte and time budget, so a huge or endless
-      // body cannot tie the connection up) and close once the client has finished
-      // sending and the response has been flushed.
-      res.setHeader('Connection', 'close');
+      // Closing (or half-closing) the socket while the client is still uploading
+      // makes the OS reset the connection, and the client then never sees the 413
+      // (on Linux it fails with EPIPE). So the connection must stay open and the
+      // rest of the upload is read and thrown away; Node does this itself once the
+      // response is sent. This only bounds it, so a huge or endless body cannot tie
+      // the connection up: past 64 MB or 5 seconds the connection is dropped.
       let discarded = 0;
       const timer = setTimeout(() => req.destroy(), 5000);
       timer.unref();
-      const closeWhenFlushed = () => {
-        clearTimeout(timer);
-        if (res.writableFinished) req.destroy(); else res.once('finish', () => req.destroy());
-      };
       req.on('data', (chunk) => {
         discarded += chunk.length;
         if (discarded > 64 * 1024 * 1024) { clearTimeout(timer); req.destroy(); }
       });
-      req.once('end', closeWhenFlushed);
+      req.once('end', () => clearTimeout(timer));
       req.resume();
     }
     if (!res.headersSent) json(res, { error: status === 500 ? 'Internal server error' : (status === 400 && !err.status ? 'Malformed URL' : err.message) }, status);
