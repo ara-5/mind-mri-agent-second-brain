@@ -136,3 +136,25 @@ test('mcp: connecting and listing tools does not start the API server', async ()
   });
   assert.equal(listening, false, 'an API server was left running after a connect-and-list session');
 });
+
+test('mcp: every tool is well documented (descriptions, every parameter described, required props exist)', () => {
+  const out = rawMcp('{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n');
+  const tools = out[0].result.tools;
+  assert.ok(tools.length >= 11);
+  for (const tool of tools) {
+    assert.match(tool.name, /^brain_[a-z_]+$/);
+    assert.ok(tool.description.length >= 100, `${tool.name}: description too short to guide a model (${tool.description.length} chars)`);
+    assert.ok(tool.title, `${tool.name}: missing title`);
+    assert.equal(tool.inputSchema.type, 'object');
+    for (const [prop, schema] of Object.entries(tool.inputSchema.properties || {})) {
+      assert.ok(schema.type, `${tool.name}.${prop}: missing type`);
+      assert.ok(schema.description && schema.description.length >= 20, `${tool.name}.${prop}: parameter needs a real description`);
+      if (schema.enum) assert.ok(schema.enum.length >= 2, `${tool.name}.${prop}: enum should list the allowed values`);
+    }
+    for (const req of tool.inputSchema.required || []) {
+      assert.ok(tool.inputSchema.properties[req], `${tool.name}: required "${req}" is not a declared property`);
+    }
+    // read-only tools say so, and tools that write say what they create or change
+    if (tool.annotations.readOnlyHint) assert.match(tool.description, /Read-only|read-only/, `${tool.name}: say that it is read-only`);
+  }
+});

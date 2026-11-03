@@ -110,13 +110,13 @@ async function ensureServerRunning() {
 const TOOLS = [
   {
     name: 'brain_recall',
-    description: 'Recall relevant memory/context from the shared Second Brain vault for a query, using graph-RAG (BFS over wikilinks, plus a semantic-similarity signal when embeddings are configured) within a token budget. Call this before answering questions that might already have research, decisions, or notes stored from other work.',
+    description: 'Recall relevant memory for a query from the shared Second Brain vault. It finds the best-matching notes (keyword and recency, plus semantic similarity when embeddings are configured), then follows their [[wikilinks]] outward for the requested number of hops, and packs the result into a token budget. Call this before answering anything that earlier work may already cover: past decisions, constraints, research, project background. Read-only. Returns { nodeCount, tokenEstimate, systemPrompt, nodes }: systemPrompt is a ready-to-use context block in which the notes are marked as reference data, not instructions. Use brain_search instead when you only need a ranked list of matching notes.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'What to recall context for' },
-        hops: { type: 'number', description: 'Graph traversal depth from seed matches (default 1)' },
-        maxTokens: { type: 'number', description: 'Token budget for the returned context (default 2000)' },
+        query: { type: 'string', minLength: 1, description: 'What you need to know, in plain words, e.g. "why did we choose SQLite for the cache". Specific queries recall better than broad ones.' },
+        hops: { type: 'integer', minimum: 0, maximum: 3, default: 1, description: 'How many [[wikilink]] steps to follow from the matching notes. 0 = matches only; 1 (default) adds directly linked notes; values above 3 are capped at 3.' },
+        maxTokens: { type: 'integer', minimum: 1, maximum: 8000, default: 2000, description: 'Token budget for the returned context. Notes that do not fit are left out. Values above 8000 are capped at 8000.' },
       },
       required: ['query'],
     },
@@ -129,16 +129,16 @@ const TOOLS = [
   },
   {
     name: 'brain_remember',
-    description: 'Write a new memory/research note into the shared Second Brain vault so future sessions, in this or any other project, can recall it later. Memory hygiene: only call this for a genuine, reusable learning — a fact, pattern, constraint, or decision that will change future behavior or save someone from re-deriving something. Do NOT call it for routine task completions, raw task output, status updates, or anything the task queue already records. Before calling, ask: "would a future session be worse off without this specific note?" — if no, skip it. Prefer updating an existing relevant note over creating a near-duplicate one (use brain_search first, then brain_node_update).',
+    description: 'Write a new memory/research note into the shared Second Brain vault so future sessions, in this or any other project, can recall it later. Memory hygiene: only call this for a genuine, reusable learning — a fact, pattern, constraint, or decision that will change future behavior or save someone from re-deriving something. Do NOT call it for routine task completions, raw task output, status updates, or anything the task queue already records. Before calling, ask: "would a future session be worse off without this specific note?" — if no, skip it. Prefer updating an existing relevant note over creating a near-duplicate one (use brain_search first, then brain_node_update). Creates a new note and never overwrites an existing one (a title clash gets a numbered filename). Returns { success, id, title, type, version }; keep the id to refer to the note later.',
     inputSchema: {
       type: 'object',
       properties: {
-        title: { type: 'string' },
-        content: { type: 'string' },
-        type: { type: 'string', description: 'memory|note|research|decision|insight|task (default memory)' },
-        tags: { type: 'array', items: { type: 'string' } },
-        agent: { type: 'string', description: 'Name identifying the calling project or agent' },
-        importance: { type: 'number', description: '1-10, default 5' },
+        title: { type: 'string', minLength: 1, maxLength: 200, description: 'Specific, searchable title that becomes the note\'s filename, e.g. "Decision - Use SQLite for the cache". Must not contain : / \\ ? * " < > | , start or end with a space, or end with a period; invalid titles are rejected with the reason.' },
+        content: { type: 'string', minLength: 1, description: 'Markdown body. Link related notes with [[Note Title]] so recall can follow the graph. Never include secrets, credentials or personal data: notes are plain files and may be synced to git.' },
+        type: { type: 'string', enum: ['memory', 'note', 'research', 'decision', 'insight', 'task'], default: 'memory', description: 'Kind of note: decision (a choice and its reason), insight (a non-obvious finding or fix), research (gathered findings), memory (general fact), note (anything else).' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Short lowercase labels, e.g. ["database", "cache"]. Used by search and filtering.' },
+        agent: { type: 'string', minLength: 1, maxLength: 100, description: 'Name of the calling project or agent; the note is stored under agents/<agent>/, which keeps each project\'s notes together. Same filename rules as title, so no slashes. If omitted, the note is stored at the vault root and its agent is recorded as "unknown".' },
+        importance: { type: 'integer', minimum: 1, maximum: 10, default: 5, description: 'How long the note stays prominent in recall, 1 to 10. Recency only re-ranks, so old notes are never hidden, but 8-10 fades over months, 5-7 (default) over weeks, and 1-4 within days.' },
       },
       required: ['title', 'content'],
     },
@@ -151,12 +151,12 @@ const TOOLS = [
   },
   {
     name: 'brain_search',
-    description: 'Hybrid keyword + semantic search across the vault (titles, tags, content), fused via Reciprocal Rank Fusion. Lighter-weight than brain_recall — returns ranked matches, not an assembled context block.',
+    description: 'Search the vault for notes matching a query: keyword search over titles, tags and content, combined with semantic similarity when embeddings are configured, then lightly re-ranked by recency. Use it to check whether a note already exists (before brain_remember) or to find a note id for brain_node_get / brain_node_update. Read-only. Returns { query, results: [{ id, title, type, tags, agent, score, preview }] }, best first; an empty list means nothing matched. Use brain_recall instead when you want assembled context to answer a question.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string' },
-        limit: { type: 'number' },
+        query: { type: 'string', minLength: 1, description: 'Words to look for, e.g. "sqlite cache decision". Matches titles, tags and note text.' },
+        limit: { type: 'integer', minimum: 1, default: 10, description: 'Maximum number of results to return (default 10).' },
       },
       required: ['query'],
     },
@@ -168,25 +168,25 @@ const TOOLS = [
   },
   {
     name: 'brain_node_get',
-    description: 'Fetch a single vault node by id, including its full content, outlinks, and backlinks.',
+    description: 'Fetch one note by id: its full markdown content, metadata (type, tags, agent, importance, version, dates), the notes it links to (outLinks) and the notes that link to it (inLinks). Read-only. Use it to read a note in full before replacing its text with brain_node_update, or to follow a link found in recalled context. Returns an error saying "not found" for an unknown id.',
     inputSchema: {
       type: 'object',
-      properties: { id: { type: 'string' } },
+      properties: { id: { type: 'string', minLength: 1, description: 'Note id exactly as returned by brain_search, brain_recall or brain_remember: the path inside the vault without ".md", e.g. "agents/atlas/Decision - Use SQLite for the cache".' } },
       required: ['id'],
     },
     handler: ({ id }) => request('GET', `/node/${encodeURIComponent(id)}`),
   },
   {
     name: 'brain_tasks_submit',
-    description: 'Submit a task/goal to the Second Brain vault-backed task queue for asynchronous work. This is a lightweight coordination primitive (a shared, auditable markdown task list with dependency-based blocking), not an autonomous orchestrator — something else still needs to watch pending tasks and do the work.',
+    description: 'Add a task to the shared, markdown-backed task queue so another agent (or a later session) can pick it up. A task with dependencies starts as "blocked" and moves to "pending" automatically when all of them complete; otherwise it starts as "pending". This only records the task: it is a coordination list, not a runner, so something else must watch for pending tasks and do the work. Creates a new task note. Returns { taskId, nodeId, status } where status is "pending" or "blocked". Write the prompt so it is self-contained: goal, relevant files, constraints and what "done" means.',
     inputSchema: {
       type: 'object',
       properties: {
-        prompt: { type: 'string' },
-        title: { type: 'string' },
-        agents: { type: 'array', items: { type: 'string' }, description: 'Agent names to assign this task to' },
-        priority: { type: 'number' },
-        dependencies: { type: 'array', items: { type: 'string' }, description: 'Task node ids that must complete first' },
+        prompt: { type: 'string', minLength: 1, maxLength: 100000, description: 'Complete, self-contained description of the work to be done.' },
+        title: { type: 'string', maxLength: 200, description: 'Short title. If omitted, one is made from the first 60 characters of the prompt, prefixed "Task - ".' },
+        agents: { type: 'array', items: { type: 'string' }, description: 'Names of the agents this task is for, e.g. ["reviewer"]. Defaults to ["coordinator"].' },
+        priority: { type: 'integer', minimum: 1, maximum: 10, default: 5, description: 'Urgency, 1 (lowest) to 10 (highest).' },
+        dependencies: { type: 'array', items: { type: 'string' }, description: 'Node ids (nodeId values returned by earlier brain_tasks_submit calls) that must complete first.' },
       },
       required: ['prompt'],
     },
@@ -195,23 +195,23 @@ const TOOLS = [
   },
   {
     name: 'brain_tasks_list',
-    description: 'List tasks in the Second Brain task queue, optionally filtered by status tag (e.g. pending, blocked, completed, failed, cancelled).',
+    description: 'List tasks in the shared task queue, optionally only those with one status. Use status "pending" to find work waiting to be picked up. Read-only. Returns { count, tasks: [{ id, title, tags, content, createdAt }] }; the content holds the prompt and any results written so far. An empty list means no tasks match.',
     inputSchema: {
       type: 'object',
-      properties: { status: { type: 'string' } },
+      properties: { status: { type: 'string', enum: ['pending', 'running', 'completed', 'failed', 'cancelled', 'blocked'], description: 'Only return tasks in this state. Omit to list all tasks.' } },
     },
     handler: ({ status }) => request('GET', status ? `/tasks?status=${encodeURIComponent(status)}` : '/tasks'),
   },
   {
     name: 'brain_messages_send',
-    description: 'Send a message from one agent/project to another agent inbox in the Second Brain vault.',
+    description: 'Send a message to another agent\'s inbox. The recipient reads it with brain_messages_get and clears it with brain_messages_mark_read. Use it for short hand-off context that does not belong in a task or a permanent note. Creates a new message note; nothing is delivered in real time, the recipient has to check its inbox. Returns { success, id } where id is the message note id.',
     inputSchema: {
       type: 'object',
       properties: {
-        toAgent: { type: 'string' },
-        fromAgent: { type: 'string' },
-        content: { type: 'string' },
-        subject: { type: 'string' },
+        toAgent: { type: 'string', minLength: 1, maxLength: 100, description: 'Recipient agent name, e.g. "reviewer". Inbox names are matched case-insensitively with spaces treated as hyphens. No slashes or other filename-invalid characters.' },
+        fromAgent: { type: 'string', minLength: 1, maxLength: 100, description: 'Sender name so the recipient knows who wrote. Recorded as "unknown" if omitted.' },
+        content: { type: 'string', minLength: 1, maxLength: 100000, description: 'The message body (markdown).' },
+        subject: { type: 'string', description: 'Short subject line. Defaults to "Message from <fromAgent>".' },
       },
       required: ['toAgent', 'content'],
     },
@@ -220,12 +220,12 @@ const TOOLS = [
   },
   {
     name: 'brain_messages_get',
-    description: 'Read an agent inbox from the Second Brain vault (unread only, by default).',
+    description: 'Read the messages addressed to an agent: unread ones by default, or the full history with unread set to false. Read-only: it does not mark anything as read; call brain_messages_mark_read with each message id once handled. Returns { agent, count, messages: [{ id, title, type, tags, agent, content }] }. count 0 means the inbox is empty.',
     inputSchema: {
       type: 'object',
       properties: {
-        agent: { type: 'string' },
-        unread: { type: 'boolean' },
+        agent: { type: 'string', minLength: 1, description: 'Whose inbox to read, using the name senders used as toAgent (case-insensitive, spaces treated as hyphens).' },
+        unread: { type: 'boolean', default: true, description: 'true (default) returns only unread messages; false returns every message including read ones.' },
       },
       required: ['agent'],
     },
@@ -234,25 +234,25 @@ const TOOLS = [
   },
   {
     name: 'brain_messages_mark_read',
-    description: 'Mark a message as read so it no longer appears in the unread inbox. Pass the message node id returned by brain_messages_get.',
+    description: 'Mark one message as read so it no longer appears in the default (unread) inbox from brain_messages_get. Call it after you have handled a message. Safe to repeat: marking an already-read message again changes nothing. The message stays in the vault and in the full history. Returns { success: true, id }, or an error "Message not found" if the id is unknown or is not a message note.',
     inputSchema: {
       type: 'object',
-      properties: { id: { type: 'string', description: 'Message node id, e.g. "messages/qa-agent/[MSG] Question"' } },
+      properties: { id: { type: 'string', minLength: 1, description: 'Message note id exactly as returned in the id field by brain_messages_get, e.g. "messages/qa-agent/[MSG] Question".' } },
       required: ['id'],
     },
     handler: ({ id }) => request('POST', '/messages/read', { id }),
   },
   {
     name: 'brain_node_update',
-    description: 'Update an existing note in place instead of creating a near-duplicate. mode "append" (default) adds your text to the end and keeps everything already there; mode "replace" overwrites the whole body, so only use it when you have the full corrected text (read it with brain_node_get first). Tags and importance, if given, replace the existing values. Safe against concurrent edits: it checks the note version and retries once if another writer changed it in between.',
+    description: 'Update an existing note in place instead of creating a near-duplicate. mode "append" (default) adds your text to the end and keeps everything already there; mode "replace" overwrites the whole body, so only use it when you have the full corrected text (read it with brain_node_get first). Tags and importance, if given, replace the existing values. Safe against concurrent edits: it checks the note version and retries once if another writer changed it in between. Returns { success: true, id, mode } (mode is omitted when only tags or importance changed). Errors: "not found" for an unknown id, "Nothing to update" if you pass only an id, and a conflict error if two other writers keep racing; in that case read the note again and retry.',
     inputSchema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'Note id from brain_search / brain_recall, e.g. "agents/my-project/Decision - Use SQLite"' },
-        content: { type: 'string', description: 'Text to append, or the full new body in replace mode' },
-        mode: { type: 'string', enum: ['append', 'replace'], description: 'append (default) or replace' },
-        tags: { type: 'array', items: { type: 'string' }, description: 'Replaces the note\'s tags' },
-        importance: { type: 'number', description: '1-10' },
+        id: { type: 'string', minLength: 1, description: 'Note id exactly as returned by brain_search, brain_recall or brain_remember, e.g. "agents/my-project/Decision - Use SQLite".' },
+        content: { type: 'string', minLength: 1, description: 'In append mode, the text to add after the existing body. In replace mode, the complete new body (it overwrites everything, so include whatever you want to keep). Omit to change only tags or importance.' },
+        mode: { type: 'string', enum: ['append', 'replace'], default: 'append', description: '"append" (default) keeps the existing text and adds yours at the end. "replace" overwrites the whole body: read the note first with brain_node_get.' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'The note\'s new complete tag list; it replaces the old tags rather than adding to them.' },
+        importance: { type: 'integer', minimum: 1, maximum: 10, description: 'New importance, 1 to 10 (see brain_remember).' },
       },
       required: ['id'],
     },
@@ -283,7 +283,7 @@ const TOOLS = [
   },
   {
     name: 'brain_health',
-    description: 'Check whether the Second Brain server is up and get vault stats (node/edge counts).',
+    description: 'Check that the Second Brain server is running and get basic vault statistics: status, version, and how many notes (nodeCount) and links (edgeCount) the vault holds. Read-only and cheap. Call it first if another tool fails with a connection error, or to confirm the memory is connected. The server is started automatically on the first tool call, so a healthy answer here means everything is ready.',
     inputSchema: { type: 'object', properties: {} },
     handler: () => request('GET', '/health'),
   },

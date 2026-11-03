@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.6.1
+
+### Changed
+- Tool definitions rewritten so models (and registry quality scores) get what they need: every parameter described, real defaults and limits (`hops` 0-3, `maxTokens` up to 8000, search default 10), enums for `type` and task `status`, what each tool returns, when to use it instead of a neighbouring tool, and when it errors.
+
+### Added
+- `Dockerfile` and `.dockerignore` so registries such as Glama can build and run the server; CI builds the image and speaks MCP to it, including a real note write as the unprivileged user.
+
+### Fixed
+- An oversized request now reliably gets its `413` on Linux too (the connection used to be closed while the client was still uploading, so it failed with EPIPE).
+- Removed `smithery.yaml`: Smithery shut down hosting, accounts and its CLI on 2026-10-31.
+
 ## 1.6.0
 
 ### Added
