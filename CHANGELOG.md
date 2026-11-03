@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Tool descriptions state size limits (100,000 characters for tasks and messages), that repeated task or message submissions create duplicates, that `brain_node_get` also reads task and message notes, and that no tool deletes notes (deliberate, so an agent cannot erase memory; delete the file in the vault folder). Based on Glama reviewer notes.
+- The vault-mismatch error message reads more naturally.
+
 ## 1.7.1
 
 ### Fixed

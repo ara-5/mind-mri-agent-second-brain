@@ -152,7 +152,7 @@ const TOOLS = [
   },
   {
     name: 'brain_remember',
-    description: 'Write a new memory/research note into the shared Second Brain vault so future sessions, in this or any other project, can recall it later. Only for a genuine, reusable learning: a fact, pattern, constraint or decision that would change future behavior or save someone from re-deriving it. Not for routine task completions, raw output or status updates (the task queue records those). Test: would a future session be worse off without this note? If not, skip it. Prefer updating an existing relevant note over creating a near-duplicate one (use brain_search first, then brain_node_update). Creates a new note and never overwrites an existing one (a title clash gets a numbered filename). Returns { success, id, title, type, version }; keep the id to refer to the note later.',
+    description: 'Write a new memory/research note into the shared Second Brain vault so future sessions, in this or any other project, can recall it later. Only for a genuine, reusable learning: a fact, pattern, constraint or decision that would change future behavior or save someone from re-deriving it. Not for routine task completions, raw output or status updates (the task queue records those). Test: would a future session be worse off without this note? If not, skip it. Prefer updating an existing relevant note over creating a near-duplicate one (use brain_search first, then brain_node_update). Creates a new note and never overwrites an existing one (a title clash gets a numbered filename). Notes are never deleted by these tools: this is deliberate, so an agent cannot erase memory; to remove a note, delete its file in the vault folder. Returns { success, id, title, type, version }; keep the id to refer to the note later.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -191,7 +191,7 @@ const TOOLS = [
   },
   {
     name: 'brain_node_get',
-    description: 'Fetch one note by id: its full markdown content, metadata (type, tags, agent, importance, version, dates), the notes it links to (outLinks) and the notes that link to it (inLinks). Read-only. Use it to read a note in full before replacing its text with brain_node_update, or to follow a link found in recalled context. The whole note is returned, so a very large note is a large response. Returns an error saying "not found" for an unknown id.',
+    description: 'Fetch one note by id (this also works for task and message notes, for example to read a single task in full): its full markdown content, metadata (type, tags, agent, importance, version, dates), the notes it links to (outLinks) and the notes that link to it (inLinks). Read-only. Use it to read a note in full before replacing its text with brain_node_update, or to follow a link found in recalled context. The whole note is returned, so a very large note is a large response. Returns an error saying "not found" for an unknown id.',
     inputSchema: {
       type: 'object',
       properties: { id: { type: 'string', minLength: 1, description: 'Note id exactly as returned by brain_search, brain_recall or brain_remember: the path inside the vault without ".md", e.g. "agents/atlas/Decision - Use SQLite for the cache".' } },
@@ -201,7 +201,7 @@ const TOOLS = [
   },
   {
     name: 'brain_tasks_submit',
-    description: 'Add a task to the shared, markdown-backed task queue so another agent (or a later session) can pick it up. A task with dependencies starts as "blocked" and moves to "pending" automatically when all of them complete; otherwise it starts as "pending". This only records the task: it is a coordination list, not a runner, so something else must watch for pending tasks (brain_tasks_list) and report back (brain_tasks_update). Returns { taskId, nodeId, status } where status is "pending" or "blocked". Write the prompt so it is self-contained: goal, relevant files, constraints and what "done" means.',
+    description: 'Add a task to the shared, markdown-backed task queue so another agent (or a later session) can pick it up. A task with dependencies starts as "blocked" and moves to "pending" automatically when all of them complete; otherwise it starts as "pending". This only records the task: it is a coordination list, not a runner, so something else must watch for pending tasks (brain_tasks_list) and report back (brain_tasks_update). Every call creates a new task, so submitting the same prompt twice creates two tasks: check brain_tasks_list first if unsure. The prompt can be up to 100,000 characters. Returns { taskId, nodeId, status } where status is "pending" or "blocked". Write the prompt so it is self-contained: goal, relevant files, constraints and what "done" means.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -242,7 +242,7 @@ const TOOLS = [
   },
   {
     name: 'brain_messages_send',
-    description: 'Send a message to another agent\'s inbox. The recipient reads it with brain_messages_get and clears it with brain_messages_mark_read. Use it for short hand-off context that does not belong in a task or a permanent note. Nothing is delivered in real time: the recipient has to check its inbox. Any valid name works as a recipient (the inbox is created on first use and unknown names are not rejected), so check the spelling; an invalid name such as one containing a slash is rejected with the reason. Every call creates a new message, so sending the same text twice delivers it twice. Returns { success, id } where id is the message note id.',
+    description: 'Send a message to another agent\'s inbox. The recipient reads it with brain_messages_get and clears it with brain_messages_mark_read. Use it for short hand-off context that does not belong in a task or a permanent note. Nothing is delivered in real time: the recipient has to check its inbox. Any valid name works as a recipient (the inbox is created on first use and unknown names are not rejected), so check the spelling; an invalid name such as one containing a slash is rejected with the reason. Every call creates a new message, so sending the same text twice delivers it twice. A message can be up to 100,000 characters. Messages are kept until the note file is deleted from the vault folder; there is deliberately no delete tool. Returns { success, id } where id is the message note id.',
     inputSchema: {
       type: 'object',
       properties: {
