@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- Dashboard layout: since the Org Chart tab was added, the graph view stacked its sidebar above a squeezed graph instead of showing them side by side. One CSS rule fixes it (a layout check was missing from the earlier browser test, which only looked for script errors).
+
 ### Changed
 - Tool descriptions state size limits (100,000 characters for tasks and messages), that repeated task or message submissions create duplicates, that `brain_node_get` also reads task and message notes, and that no tool deletes notes (deliberate, so an agent cannot erase memory; delete the file in the vault folder). Based on Glama reviewer notes.
 - The vault-mismatch error message reads more naturally.

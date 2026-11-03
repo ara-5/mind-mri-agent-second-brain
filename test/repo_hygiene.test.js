@@ -61,3 +61,10 @@ test('.gitignore keeps runtime-generated vault folders out of commits', () => {
     assert.ok(ignore.includes(dir), `.gitignore should list ${dir}`);
   }
 });
+
+test('dashboard: the graph pane keeps its side-by-side layout (a .view-pane column rule once stacked the sidebar above the graph)', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'ui', 'index.html'), 'utf8');
+  // .view-pane sets flex-direction: column for every tab pane. The graph pane is
+  // also the .workspace (sidebar beside the canvas), so it needs an explicit row.
+  assert.match(html, /\.workspace\.view-pane\s*\{[^}]*flex-direction:\s*row/);
+});

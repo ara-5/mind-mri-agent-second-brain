@@ -131,6 +131,10 @@
     }
     .view-pane { display: none; height: 100%; min-height: 0; flex: 1; flex-direction: column; }
     .view-pane.active { display: flex; }
+    /* The graph pane is also the .workspace (sidebar beside the canvas). .view-pane
+       sets flex-direction: column for the other panes and, being later in the
+       file, would otherwise stack the sidebar above the graph. */
+    .workspace.view-pane { flex-direction: row; }
     .org-chart-pane {
       flex: 1;
       overflow-y: auto;
