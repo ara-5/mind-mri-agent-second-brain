@@ -158,3 +158,87 @@ test('mcp: every tool is well documented (descriptions, every parameter describe
     if (tool.annotations.readOnlyHint) assert.match(tool.description, /Read-only|read-only/, `${tool.name}: say that it is read-only`);
   }
 });
+
+// ── The MCP server must not write to a Second Brain that has a different vault ──
+import http from 'node:http';
+import { spawn } from 'node:child_process';
+import os from 'node:os';
+import { vaultIdFor } from '../sdk/vault_id.js';
+
+// A stand-in for "some other Second Brain already answering on the port".
+async function fakeServer(healthBody) {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    seen.push(`${req.method} ${req.url}`);
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/health') return res.end(JSON.stringify(healthBody));
+    res.end(JSON.stringify({ success: true, id: 'faked', node: { title: 't', type: 'memory', version: 1 } }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return { server, seen, port: server.address().port };
+}
+
+function runMcp(port, env, message) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(ROOT, 'mcp', 'server.js')], {
+      stdio: ['pipe', 'pipe', 'ignore'],
+      env: { ...process.env, BRAIN_PORT: String(port), BRAIN_KEY: '', ...env },
+    });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.on('close', () => resolve(JSON.parse(out.trim().split(String.fromCharCode(10))[0])));
+    child.stdin.end(JSON.stringify({ jsonrpc: '2.0', id: 1, ...message }) + String.fromCharCode(10));
+  });
+}
+
+const callMsg = (name, args) => ({ method: 'tools/call', params: { name, arguments: args } });
+const myVault = path.join(os.tmpdir(), 'second-brain-expected-vault');
+const textOf = (reply) => reply.result.content[0].text;
+
+test('mcp: refuses to write to an older server that does not report its vault', async () => {
+  const fake = await fakeServer({ status: 'ok', version: '1.4.0' });
+  try {
+    const reply = await runMcp(fake.port, { BRAIN_VAULT: myVault }, callMsg('brain_remember', { title: 'T', content: 'c' }));
+    assert.equal(reply.result.isError, true);
+    assert.match(textOf(reply), /older version that does not say which vault/);
+    assert.match(textOf(reply), /BRAIN_PORT/);
+    assert.deepEqual(fake.seen.filter((s) => !s.startsWith('GET /health')), [], 'no tool request may reach the other server');
+  } finally { fake.server.close(); }
+});
+
+test('mcp: refuses a server that is using a different vault', async () => {
+  const fake = await fakeServer({ status: 'ok', vaultId: vaultIdFor(path.join(os.tmpdir(), 'somebody-elses-vault')) });
+  try {
+    const reply = await runMcp(fake.port, { BRAIN_VAULT: myVault }, callMsg('brain_remember', { title: 'T', content: 'c' }));
+    assert.equal(reply.result.isError, true);
+    assert.match(textOf(reply), /different vault/);
+    assert.deepEqual(fake.seen.filter((s) => !s.startsWith('GET /health')), []);
+  } finally { fake.server.close(); }
+});
+
+test('mcp: uses a server whose vault matches, and BRAIN_ALLOW_ANY_VAULT=1 opts out of the check', async () => {
+  const same = await fakeServer({ status: 'ok', vaultId: vaultIdFor(myVault) });
+  try {
+    const reply = await runMcp(same.port, { BRAIN_VAULT: myVault }, callMsg('brain_remember', { title: 'T', content: 'c' }));
+    assert.ok(!reply.result.isError, textOf(reply));
+    assert.ok(same.seen.includes('POST /remember'));
+  } finally { same.server.close(); }
+
+  const other = await fakeServer({ status: 'ok', version: '1.4.0' });
+  try {
+    const reply = await runMcp(other.port, { BRAIN_VAULT: myVault, BRAIN_ALLOW_ANY_VAULT: '1' }, callMsg('brain_remember', { title: 'T', content: 'c' }));
+    assert.ok(!reply.result.isError, textOf(reply));
+    assert.ok(other.seen.includes('POST /remember'));
+  } finally { other.server.close(); }
+});
+
+test('mcp: brain_health still works on a mismatch and reports it', async () => {
+  const fake = await fakeServer({ status: 'ok', version: '1.4.0', nodeCount: 3 });
+  try {
+    const reply = await runMcp(fake.port, { BRAIN_VAULT: myVault }, callMsg('brain_health', {}));
+    assert.ok(!reply.result.isError);
+    const health = JSON.parse(textOf(reply));
+    assert.equal(health.nodeCount, 3);
+    assert.match(health.vaultCheck, /^MISMATCH: /);
+  } finally { fake.server.close(); }
+});

@@ -49,6 +49,7 @@ import {
 } from './brain_engine.js';
 import { resolveKeys, MODELS } from '../sdk/models_config.js';
 import { createGitSync } from '../sdk/git_sync.js';
+import { vaultIdFor } from '../sdk/vault_id.js';
 import { TaskQueue } from '../sdk/task_queue.js';
 import { Messenger } from '../sdk/messenger.js';
 import { buildOrgChart } from '../sdk/org_chart.js';
@@ -374,6 +375,7 @@ async function handleRequest(req, res) {
       version:      PKG_VERSION,
       port:         PORT,
       vault:        './vault', // Relative path to hide absolute local filesystem directories
+      vaultId:      vaultIdFor(VAULT_DIR), // opaque hash: lets the MCP server confirm it is talking to the vault it expects
       nodeCount:    Object.keys(nodes).length,
       edgeCount:    edges.length,
       lastReload,

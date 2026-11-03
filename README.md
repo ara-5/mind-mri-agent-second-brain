@@ -283,6 +283,7 @@ Every capability below is additive and opt-in — with none of it configured, th
 | `BRAIN_PORT` | The port the REST API listens on. | `3747` |
 | `BRAIN_HOST` | Address the REST API binds to. Loopback-only by default; set to `0.0.0.0` only together with `BRAIN_KEY`. | `127.0.0.1` |
 | `BRAIN_VAULT` | Vault folder (created if missing). | `./vault` |
+| `BRAIN_ALLOW_ANY_VAULT` | MCP server only. By default it refuses to use an already-running Second Brain whose vault differs from the one it expects (or that is too old to say), so notes never land in the wrong vault. Set to `1` to use that server anyway. | unset |
 | `BRAIN_CORS_ORIGIN` | Allow cross-origin browser access from this origin. Off by default; the bundled dashboard is same-origin and needs nothing. | unset |
 | `BRAIN_MAX_BODY_BYTES` | Maximum request body size (413 above it). | `2097152` |
 | `SANDBOX_ALLOW_LOCAL` | `1` allows `/sandbox/execute` without Docker (unisolated; trusted environments only). | unset |

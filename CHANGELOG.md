@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.1
+
+### Fixed
+- The MCP server could silently write to the wrong vault. It treated any healthy answer on the port as its own server, so with another Second Brain already running there (a dev server, an older install) notes went into that one's vault. `/health` now reports an opaque `vaultId`, and the MCP server refuses to run tools against a server whose vault does not match (or that is too old to report one), with a message explaining the fix. `brain_health` still works and reports the check. `BRAIN_ALLOW_ANY_VAULT=1` opts out.
+
 ## 1.7.0
 
 ### Added

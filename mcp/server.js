@@ -16,6 +16,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { vaultIdFor } from '../sdk/vault_id.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT      = path.resolve(__dirname, '..');
@@ -76,6 +77,28 @@ function serverEnv() {
     env.SANDBOX_WORKSPACE = env.SANDBOX_WORKSPACE || path.join(home, 'sandbox_workspace');
   }
   return env;
+}
+
+// The vault this MCP server expects the API to be using: the one it would start
+// the API with itself.
+const EXPECTED_VAULT_DIR = serverEnv().BRAIN_VAULT ? path.resolve(serverEnv().BRAIN_VAULT) : path.join(ROOT, 'vault');
+const EXPECTED_VAULT_ID = vaultIdFor(EXPECTED_VAULT_DIR);
+
+// ensureServerRunning() accepts any healthy answer on the port, but a Second Brain
+// started for another vault (a dev server, an older install) answers just as well,
+// and writing to it would silently put notes in the wrong vault. So confirm the
+// vault before running any tool. The positive answer is cached briefly.
+let vaultVerifiedAt = 0;
+async function vaultProblem() {
+  if (process.env.BRAIN_ALLOW_ANY_VAULT === '1') return null;
+  if (Date.now() - vaultVerifiedAt < 30_000) return null;
+  let health;
+  try { health = await request('GET', '/health'); } catch { return null; } // unreachable is reported elsewhere
+  if (health.vaultId === EXPECTED_VAULT_ID) { vaultVerifiedAt = Date.now(); return null; }
+  const why = health.vaultId
+    ? 'is using a different vault'
+    : 'is an older version that does not say which vault it uses';
+  return `A Second Brain server is already running at ${BASE}, but it ${why} than the one this MCP server expects (${EXPECTED_VAULT_DIR}). Writing to it could put notes in the wrong vault, so no tool was run. Fix one of these: stop that server; set BRAIN_PORT to a free port (for example 3757) in this MCP server's configuration; or set BRAIN_ALLOW_ANY_VAULT=1 if you really do want to use that server.`;
 }
 
 let ensureServerPromise = null;
@@ -429,8 +452,16 @@ async function handleMessage(msg) {
           });
           return;
         }
+        // Never run a tool against a server that has a different vault. brain_health
+        // is the exception so the mismatch can be diagnosed: it reports the check.
+        const problem = await vaultProblem();
+        if (problem && name !== 'brain_health') {
+          replyResult(id, { content: [{ type: 'text', text: problem }], isError: true });
+          return;
+        }
         try {
-          const result = await tool.handler(args);
+          let result = await tool.handler(args);
+          if (name === 'brain_health') result = { ...result, vaultCheck: problem ? `MISMATCH: ${problem}` : 'ok' };
           replyResult(id, {
             content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
           });

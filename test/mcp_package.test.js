@@ -301,3 +301,23 @@ test('brain_tasks_update refuses ids that are not tasks and leaves those notes u
   const [badStatus] = mcp([call('brain_tasks_update', { id: 'tasks/x', status: 'finished' })]);
   assert.equal(badStatus.result.isError, true);
 });
+
+test('/health reports an opaque vault id, and an MCP server configured for another vault is refused', async () => {
+  const { vaultIdFor } = await import('../sdk/vault_id.js');
+  const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+  assert.equal(health.vaultId, vaultIdFor(vault));
+  assert.ok(!JSON.stringify(health).includes(vault), 'health must not leak the absolute vault path');
+
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'second-brain-other-vault-'));
+  const run = spawnSync(process.execPath, [path.join(ROOT, 'mcp', 'server.js')], {
+    input: JSON.stringify({ jsonrpc: '2.0', id: 1, ...call('brain_remember', { title: 'Must not be written', content: 'wrong vault' }) }) + '\n',
+    encoding: 'utf8', timeout: 30_000,
+    env: { ...process.env, BRAIN_PORT: String(port), BRAIN_VAULT: elsewhere, BRAIN_KEY: '' },
+  });
+  const reply = JSON.parse(run.stdout.trim().split('\n')[0]);
+  assert.equal(reply.result.isError, true);
+  assert.match(reply.result.content[0].text, /different vault/);
+  const found = await (await fetch(`http://127.0.0.1:${port}/search?q=wrong%20vault`)).json();
+  assert.equal(found.results.length, 0, 'the refused note must not exist in either vault');
+  fs.rmSync(elsewhere, { recursive: true, force: true });
+});
